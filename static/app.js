@@ -1,28 +1,98 @@
-// Voice-to-Insight Agent — frontend logic.
-// Records mic audio via MediaRecorder, converts it to 16 kHz mono WAV *in the
-// browser* (so the backend needs no ffmpeg), then walks the pipeline stage by
-// stage so a live audience can watch each step complete.
+// Voice-to-Insight Agent — Enhanced Frontend Logic
+// Supports live recording, file upload, audio playback player,
+// task filtering, batch clear, undoable delete, and Voice RAG.
 
 const els = {
   recordBtn: document.getElementById("recordBtn"),
   recDot: document.getElementById("recDot"),
   recStatus: document.getElementById("recStatus"),
+  recTimer: document.getElementById("recTimer"),
   meter: document.getElementById("meter"),
+  uploadAudioBtn: document.getElementById("uploadAudioBtn"),
+  audioFileInput: document.getElementById("audioFileInput"),
+  audioPlaybackWrap: document.getElementById("audioPlaybackWrap"),
+  audioPlayer: document.getElementById("audioPlayer"),
   textFallback: document.getElementById("textFallback"),
   runTextBtn: document.getElementById("runTextBtn"),
   samples: document.getElementById("samples"),
   pipeline: document.getElementById("pipeline"),
+  pipelineStatus: document.getElementById("pipelineStatus"),
   tasks: document.getElementById("tasks"),
+  historyList: document.getElementById("historyList"),
+  tasksView: document.getElementById("tasksView"),
+  historyView: document.getElementById("historyView"),
+  tabTasksBtn: document.getElementById("tabTasksBtn"),
+  tabHistoryBtn: document.getElementById("tabHistoryBtn"),
+  taskSearchInput: document.getElementById("taskSearchInput"),
+  historySearchInput: document.getElementById("historySearchInput"),
+  pillAll: document.getElementById("pillAll"),
+  pillPending: document.getElementById("pillPending"),
+  pillCompleted: document.getElementById("pillCompleted"),
+  countAll: document.getElementById("countAll"),
+  countPending: document.getElementById("countPending"),
+  countCompleted: document.getElementById("countCompleted"),
+  clearCompletedBtn: document.getElementById("clearCompletedBtn"),
   errorBanner: document.getElementById("errorBanner"),
+  sttChip: document.getElementById("sttChip"),
+  llmChip: document.getElementById("llmChip"),
+  dbChip: document.getElementById("dbChip"),
+  notionChip: document.getElementById("notionChip"),
+  toast: document.getElementById("toast"),
+  toastMsg: document.getElementById("toastMsg"),
+  toastUndoBtn: document.getElementById("toastUndoBtn"),
 };
 
-// Sample phrases for the fallback path (no mic needed).
+// Global State
+let currentFilter = "all";
+let cachedTasks = [];
+let cachedHistory = [];
+let toastTimeout = null;
+let lastDeletedTask = null;
+
+// Multilingual Samples
 const SAMPLES = [
-  "Remind Sarah to send the Q3 report by next Friday, it's high priority.",
-  "اكتبلي بوست عن الإنجازات تبعنا هالشهر للينكد إن، بطريقة احترافية.",
-  "Summarize this: we met the client, they liked the demo, but want pricing options and a follow-up call next week.",
-  "ذكرني بكرا اتصل بالمحاسب، أولوية متوسطة.",
+  { label: "Task (Arabic)", text: "ذكرني بكرا اتصل بالمحاسب، أولوية متوسطة." },
+  { label: "Task (English)", text: "Remind Sarah to send the Q3 financial report by next Friday, high priority." },
+  { label: "Content (Arabic)", text: "اكتبلي بوست للينكد إن عن إطلاق ميزة الذكاء الاصطناعي الصوتي بطريقة احترافية." },
+  { label: "Summary (French)", text: "Résume cette note de réunion: l'équipe marketing a validé le budget, et le lancement est confirmé pour le mois prochain." },
+  { label: "Ask RAG (Arabic)", text: "ما هي المهام المطلوبة المسجلة؟" },
+  { label: "Ask RAG (English)", text: "What did I record about the contract or report?" },
 ];
+
+// Helper: Check if string contains Arabic characters
+function isArabic(text) {
+  return /[\u0600-\u06FF]/.test(text || "");
+}
+
+// Helper: Copy to clipboard
+window.copyText = function(text) {
+  navigator.clipboard.writeText(text).then(() => {
+    showToast("Copied to clipboard!");
+  }).catch((err) => {
+    console.error("Copy failed", err);
+  });
+};
+
+// ---------- Toast Notifications ----------
+function showToast(msg, undoFn = null) {
+  if (toastTimeout) clearTimeout(toastTimeout);
+  els.toastMsg.textContent = msg;
+  if (undoFn) {
+    els.toastUndoBtn.style.display = "inline-block";
+    els.toastUndoBtn.onclick = () => {
+      undoFn();
+      hideToast();
+    };
+  } else {
+    els.toastUndoBtn.style.display = "none";
+  }
+  els.toast.style.display = "flex";
+  toastTimeout = setTimeout(hideToast, 5000);
+}
+
+function hideToast() {
+  els.toast.style.display = "none";
+}
 
 // ---------- Error banner ----------
 function showError(msg) {
@@ -34,72 +104,162 @@ function clearError() {
   els.errorBanner.textContent = "";
 }
 
-// ---------- Pipeline rendering ----------
-// Rebuilds the pipeline panel from a stage state object each time it changes.
+// ---------- Health & Configuration ----------
+async function checkHealth() {
+  try {
+    const res = await fetch("/api/health");
+    const data = await res.json();
+    if (els.sttChip) els.sttChip.textContent = `STT: ${data.transcribe_backend.toUpperCase()}`;
+    if (els.llmChip) els.llmChip.textContent = `LLM: ${data.understand_backend.toUpperCase()}`;
+    if (els.notionChip) {
+      if (data.notion_configured) {
+        els.notionChip.classList.add("active");
+        els.notionChip.textContent = "Notion: Connected";
+      } else {
+        els.notionChip.classList.remove("active");
+        els.notionChip.textContent = "Notion: Optional";
+      }
+    }
+  } catch (e) {
+    console.error("Health check failed", e);
+  }
+}
+
+// ---------- Pipeline Rendering ----------
 function renderPipeline(state) {
-  const s = (name, cls, label, bodyHtml) =>
-    `<div class="stage ${cls}"><div class="label">${label}</div><div class="body">${bodyHtml}</div></div>`;
+  const s = (cls, label, bodyHtml, copyVal = null) => {
+    const copyBtn = copyVal
+      ? `<button class="copy-btn" onclick="copyText(${escapeAttr(JSON.stringify(copyVal))})">📋 Copy</button>`
+      : "";
+    return `
+      <div class="stage ${cls}">
+        <div class="stage-header">
+          <span class="label">${label}</span>
+          ${copyBtn}
+        </div>
+        <div class="body">${bodyHtml}</div>
+      </div>`;
+  };
 
   let html = "";
-  // Transcript stage (skipped when using text fallback)
-  if (state.transcript !== undefined) {
-    if (state.transcript.status === "active")
-      html += s("transcript", "active", "① Transcript", "<em>Transcribing…</em>");
-    else if (state.transcript.status === "done")
-      html += s("transcript", "done", `① Transcript <span class="locale">(${state.transcript.locale || "?"})</span>`,
-        escapeHtml(state.transcript.text || "(empty)"));
-  }
 
-  // Classification stage
-  if (state.classify) {
-    if (state.classify.status === "active")
-      html += s("classify", "active", "② Classification", "<em>Understanding…</em>");
-    else if (state.classify.status === "done") {
-      const intent = state.classify.intent;
-      html += s("classify", "done", "② Classification",
-        `<span class="badge ${intent}">${intent}</span>` +
-        `<pre>${escapeHtml(JSON.stringify(state.classify.data, null, 2))}</pre>`);
-    } else if (state.classify.status === "error") {
-      html += s("classify", "err", "② Classification",
-        `<span class="badge error">error</span><pre>${escapeHtml(state.classify.error)}</pre>`);
+  // 1. Transcription Stage
+  if (state.transcript !== undefined) {
+    if (state.transcript.status === "active") {
+      html += s("active", "① Speech-to-Text", "<em>Transcribing audio with Whisper…</em>");
+      if (els.pipelineStatus) els.pipelineStatus.textContent = "Transcribing…";
+    } else if (state.transcript.status === "done") {
+      const text = state.transcript.text || "(empty)";
+      const rtlCls = isArabic(text) ? "rtl-text" : "";
+      html += s(
+        "done",
+        `① Speech-to-Text <span class="locale">(${state.transcript.locale || "detected"})</span>`,
+        `<div class="${rtlCls}">${escapeHtml(text)}</div>`,
+        text
+      );
     }
   }
 
-  // Action stage
-  if (state.action) {
-    html += s("action", "done", "③ Action", renderAction(state.action));
+  // 2. Classification Stage
+  if (state.classify) {
+    if (state.classify.status === "active") {
+      html += s("active", "② Understanding & Extraction", "<em>Classifying intent & extracting JSON…</em>");
+      if (els.pipelineStatus) els.pipelineStatus.textContent = "Understanding…";
+    } else if (state.classify.status === "done") {
+      const intent = state.classify.intent;
+      html += s(
+        "done",
+        "② Understanding & Extraction",
+        `<span class="badge ${intent}">${intent}</span>` +
+        `<pre>${escapeHtml(JSON.stringify(state.classify.data, null, 2))}</pre>`,
+        JSON.stringify(state.classify.data, null, 2)
+      );
+    } else if (state.classify.status === "error") {
+      html += s(
+        "err",
+        "② Understanding & Extraction",
+        `<span class="badge error">error</span><pre>${escapeHtml(state.classify.error)}</pre>`
+      );
+    }
   }
 
-  els.pipeline.innerHTML = html || '<p class="empty">Record or run text to see the chain light up.</p>';
+  // 3. Action Stage
+  if (state.action) {
+    html += s("done", "③ Action & Workspace Storage", renderAction(state.action));
+    if (els.pipelineStatus) els.pipelineStatus.textContent = "Completed";
+  }
+
+  els.pipeline.innerHTML = html || '<p class="empty">Record or run text to see the chain execute live.</p>';
 }
 
 function renderAction(action) {
   if (action.type === "task_added") {
     const t = action.task;
-    const notion = action.notion && action.notion.pushed
-      ? '<div class="meta">✓ Pushed to Notion</div>'
-      : `<div class="meta">Notion: ${escapeHtml((action.notion && action.notion.reason) || "n/a")}</div>`;
-    return `✅ Task added: <strong>${escapeHtml(t.title)}</strong>${notion}`;
+    let notionHtml = "";
+    if (action.notion && action.notion.pushed) {
+      const url = action.notion.url || (t && t.notion_url);
+      notionHtml = url
+        ? ` <a href="${escapeHtml(url)}" target="_blank" class="notion-pill">Open in Notion ↗</a>`
+        : ' <span class="notion-pill">✓ Synced to Notion</span>';
+    }
+    const rtlCls = isArabic(t.title) ? "rtl-text" : "";
+    return `
+      <div>
+        ✅ Task saved to database: <strong class="${rtlCls}">${escapeHtml(t.title)}</strong>${notionHtml}
+      </div>`;
   }
+
   if (action.type === "caption_generated") {
-    return `📝 Caption for <strong>${escapeHtml(action.platform)}</strong> (${escapeHtml(action.tone || "")}):` +
-      `<pre>${escapeHtml(action.caption)}</pre>`;
+    const rtlCls = isArabic(action.caption) ? "rtl-text" : "";
+    return `
+      <div>
+        📝 Caption for <strong>${escapeHtml(action.platform || "Social")}</strong> (${escapeHtml(action.tone || "General")}):
+        <div class="rag-box ${rtlCls}">${escapeHtml(action.caption)}</div>
+        <button class="btn-secondary copy-btn" style="margin-top:8px;" onclick="copyText(${escapeAttr(JSON.stringify(action.caption))})">📋 Copy Caption</button>
+      </div>`;
   }
+
   if (action.type === "summary_shown") {
+    const rtlCls = isArabic(action.summary_text) ? "rtl-text" : "";
     const pts = (action.key_points || []).map((p) => `<li>${escapeHtml(p)}</li>`).join("");
-    return `🧾 ${escapeHtml(action.summary_text)}<ul>${pts}</ul>`;
+    return `
+      <div class="${rtlCls}">
+        🧾 <strong>Summary:</strong> ${escapeHtml(action.summary_text)}
+        <ul style="margin: 6px 0 0 16px;">${pts}</ul>
+      </div>`;
   }
+
+  if (action.type === "rag_answer") {
+    const rtlCls = isArabic(action.answer) ? "rtl-text" : "";
+    let citationsHtml = "";
+    if (action.citations && action.citations.length) {
+      citationsHtml = '<div class="citations-header">Source Citations:</div>' +
+        action.citations.map((c) =>
+          `<div class="citation-item"><strong>#${c.id} [${escapeHtml(c.intent)}]:</strong> ${escapeHtml(c.transcript)}</div>`
+        ).join("");
+    }
+    return `
+      <div class="rag-box">
+        <div class="rag-answer ${rtlCls}">💬 ${escapeHtml(action.answer)}</div>
+        ${citationsHtml}
+        <button class="btn-secondary copy-btn" style="margin-top:8px;" onclick="copyText(${escapeAttr(JSON.stringify(action.answer))})">📋 Copy Answer</button>
+      </div>`;
+  }
+
   return escapeHtml(JSON.stringify(action));
 }
 
 function escapeHtml(str) {
-  return String(str).replace(/[&<>"']/g, (c) =>
+  return String(str || "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-// ---------- The pipeline driver ----------
-// Runs classify + action given a transcript, updating `state` as it goes.
-async function runUnderstand(transcript, state) {
+function escapeAttr(str) {
+  return String(str || "").replace(/"/g, '&quot;');
+}
+
+// ---------- Pipeline Driver ----------
+async function runUnderstand(transcript, state, locale = "") {
   state.classify = { status: "active" };
   renderPipeline(state);
 
@@ -108,11 +268,11 @@ async function runUnderstand(transcript, state) {
     const r = await fetch("/api/understand", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ transcript }),
+      body: JSON.stringify({ transcript, locale }),
     });
     res = await r.json();
   } catch (e) {
-    state.classify = { status: "error", error: "Network error calling /api/understand: " + e.message };
+    state.classify = { status: "error", error: "Network error: " + e.message };
     renderPipeline(state);
     showError(state.classify.error);
     return;
@@ -129,25 +289,27 @@ async function runUnderstand(transcript, state) {
   state.action = res.action;
   renderPipeline(state);
 
-  if (res.intent === "task") loadTasks();
+  loadTasks();
+  loadHistory();
 }
 
-// ---------- Text fallback path ----------
+// ---------- Text Fallback ----------
 async function runFromText() {
   const text = els.textFallback.value.trim();
-  if (!text) { showError("Type or pick a sample first."); return; }
+  if (!text) { showError("Type or pick a sample prompt first."); return; }
   clearError();
   const state = {};
-  // No transcript stage — we already have text.
   await runUnderstand(text, state);
 }
 
-// ---------- Mic recording -> WAV -> transcribe -> understand ----------
+// ---------- Mic Recording & Audio Upload ----------
 let mediaRecorder = null;
 let chunks = [];
 let audioCtx = null;
 let analyser = null;
 let meterRAF = null;
+let recStartTime = 0;
+let recTimerInterval = null;
 
 function buildMeter() {
   els.meter.innerHTML = "";
@@ -163,9 +325,16 @@ function animateMeter() {
   const step = Math.floor(data.length / bars.length);
   for (let i = 0; i < bars.length; i++) {
     const v = data[i * step] / 255;
-    bars[i].style.height = 4 + v * 36 + "px";
+    bars[i].style.height = 4 + v * 28 + "px";
   }
   meterRAF = requestAnimationFrame(animateMeter);
+}
+
+function updateRecTimer() {
+  const elapsed = Math.floor((Date.now() - recStartTime) / 1000);
+  const m = String(Math.floor(elapsed / 60)).padStart(2, "0");
+  const s = String(elapsed % 60).padStart(2, "0");
+  els.recTimer.textContent = `${m}:${s}`;
 }
 
 async function startRecording() {
@@ -174,7 +343,7 @@ async function startRecording() {
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
-    showError("Microphone access denied or unavailable: " + e.message + "\nUse the text fallback below instead.");
+    showError("Microphone access denied or unavailable: " + e.message + "\nYou can use 'Upload Audio' or the text input below.");
     return;
   }
 
@@ -184,7 +353,11 @@ async function startRecording() {
   mediaRecorder.onstop = () => onRecordingStopped(stream);
   mediaRecorder.start();
 
-  // live meter
+  recStartTime = Date.now();
+  els.recTimer.textContent = "00:00";
+  els.recTimer.style.display = "inline-block";
+  recTimerInterval = setInterval(updateRecTimer, 1000);
+
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   const src = audioCtx.createMediaStreamSource(stream);
   analyser = audioCtx.createAnalyser();
@@ -193,7 +366,7 @@ async function startRecording() {
   animateMeter();
 
   els.recordBtn.classList.add("recording");
-  els.recordBtn.textContent = "■ Stop";
+  els.recordBtn.textContent = "■ Stop Recording";
   els.recDot.classList.add("live");
   els.recStatus.textContent = "Recording…";
 }
@@ -201,9 +374,11 @@ async function startRecording() {
 function stopRecording() {
   if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
   els.recordBtn.classList.remove("recording");
-  els.recordBtn.textContent = "● Record";
+  els.recordBtn.textContent = "● Record Voice";
   els.recDot.classList.remove("live");
-  els.recStatus.textContent = "Processing…";
+  els.recStatus.textContent = "Transcribing…";
+  clearInterval(recTimerInterval);
+  els.recTimer.style.display = "none";
   if (meterRAF) cancelAnimationFrame(meterRAF);
 }
 
@@ -214,18 +389,31 @@ async function onRecordingStopped(stream) {
   const mime = mediaRecorder.mimeType || "audio/webm";
   const blob = new Blob(chunks, { type: mime });
 
+  // Attach audio to playback player
+  attachAudioPlayback(blob);
+
+  // Send for transcription
+  await processAudioBlob(blob, mime);
+}
+
+function attachAudioPlayback(blob) {
+  const url = URL.createObjectURL(blob);
+  els.audioPlayer.src = url;
+  els.audioPlaybackWrap.style.display = "flex";
+}
+
+async function processAudioBlob(blob, mime) {
   const state = { transcript: { status: "active" } };
   renderPipeline(state);
 
-  // OpenAI's transcription API accepts the recorded audio directly (webm/mp4/…),
-  // so we send the raw blob — no in-browser conversion needed. Pick a filename
-  // extension that matches the recorder's mime type so the API infers the format.
   const ext = mime.includes("mp4") || mime.includes("m4a") ? "mp4"
     : mime.includes("ogg") ? "ogg"
     : mime.includes("wav") ? "wav"
     : "webm";
+
   const form = new FormData();
   form.append("audio", blob, "recording." + ext);
+
   let res;
   try {
     const r = await fetch("/api/transcribe", { method: "POST", body: form });
@@ -248,43 +436,230 @@ async function onRecordingStopped(stream) {
   state.transcript = { status: "done", text: res.transcript, locale: res.locale };
   renderPipeline(state);
 
-  // Feed the transcript into the understanding + action stages.
-  await runUnderstand(res.transcript, state);
+  await runUnderstand(res.transcript, state, res.locale);
 }
 
-// ---------- Task list ----------
+// Audio File Upload
+els.uploadAudioBtn.addEventListener("click", () => els.audioFileInput.click());
+els.audioFileInput.addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  clearError();
+  attachAudioPlayback(file);
+  await processAudioBlob(file, file.type || "audio/wav");
+  els.audioFileInput.value = "";
+});
+
+// ---------- Task List & Management ----------
 async function loadTasks() {
   try {
     const r = await fetch("/api/tasks");
     const { tasks } = await r.json();
-    if (!tasks.length) { els.tasks.innerHTML = '<p class="empty">No tasks yet.</p>'; return; }
-    els.tasks.innerHTML = tasks.map((t) => `
-      <div class="task-item">
-        <div class="t">${escapeHtml(t.title)}</div>
-        <div class="meta">
-          <span class="pri ${t.priority}">${t.priority}</span>
-          ${t.owner ? " · 👤 " + escapeHtml(t.owner) : ""}
-          ${t.due_date ? " · 📅 " + escapeHtml(t.due_date) : ""}
-        </div>
-      </div>`).join("");
+    cachedTasks = tasks || [];
+    renderTaskList();
   } catch (e) {
-    showError("Could not load tasks: " + e.message);
+    console.error("Could not load tasks:", e);
   }
 }
 
-// ---------- Wire up ----------
+function renderTaskList() {
+  const query = (els.taskSearchInput.value || "").trim().toLowerCase();
+
+  const pendingCount = cachedTasks.filter((t) => t.status === "pending").length;
+  const completedCount = cachedTasks.filter((t) => t.status === "completed").length;
+  els.countAll.textContent = cachedTasks.length;
+  els.countPending.textContent = pendingCount;
+  els.countCompleted.textContent = completedCount;
+
+  let filtered = cachedTasks.filter((t) => {
+    if (currentFilter === "pending" && t.status !== "pending") return false;
+    if (currentFilter === "completed" && t.status !== "completed") return false;
+    if (query) {
+      const matchTitle = (t.title || "").toLowerCase().includes(query);
+      const matchOwner = (t.owner || "").toLowerCase().includes(query);
+      return matchTitle || matchOwner;
+    }
+    return true;
+  });
+
+  if (!filtered.length) {
+    els.tasks.innerHTML = '<p class="empty">No tasks found.</p>';
+    return;
+  }
+
+  els.tasks.innerHTML = filtered.map((t) => {
+    const isDone = t.status === "completed";
+    const rtlCls = isArabic(t.title) ? "rtl-text" : "";
+    const notionLink = t.notion_url
+      ? `<a href="${escapeHtml(t.notion_url)}" target="_blank" class="notion-pill">Notion ↗</a>`
+      : "";
+    return `
+      <div class="task-item ${isDone ? 'completed' : ''}" id="task-${t.id}">
+        <div class="task-left">
+          <input type="checkbox" class="task-check" ${isDone ? "checked" : ""} onchange="toggleTask(${t.id})">
+          <div>
+            <div class="t ${rtlCls}">${escapeHtml(t.title)}</div>
+            <div class="meta">
+              <span class="pri ${t.priority}">${t.priority}</span>
+              ${t.owner ? " · 👤 " + escapeHtml(t.owner) : ""}
+              ${t.due_date ? " · 📅 " + escapeHtml(t.due_date) : ""}
+              ${notionLink}
+            </div>
+          </div>
+        </div>
+        <div class="task-actions">
+          <button class="del-btn" title="Delete Task" onclick="deleteTask(${t.id})">🗑️</button>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+window.toggleTask = async function(id) {
+  // Optimistic UI update
+  const task = cachedTasks.find((t) => t.id === id);
+  if (task) {
+    task.status = task.status === "pending" ? "completed" : "pending";
+    renderTaskList();
+  }
+  try {
+    await fetch(`/api/tasks/${id}/toggle`, { method: "POST" });
+    loadTasks();
+  } catch (e) {
+    showError("Failed to update task: " + e.message);
+    loadTasks();
+  }
+};
+
+window.deleteTask = async function(id) {
+  const taskIndex = cachedTasks.findIndex((t) => t.id === id);
+  if (taskIndex !== -1) {
+    lastDeletedTask = cachedTasks[taskIndex];
+    cachedTasks.splice(taskIndex, 1);
+    renderTaskList();
+  }
+
+  try {
+    await fetch(`/api/tasks/${id}`, { method: "DELETE" });
+    showToast("Task deleted", () => {
+      // Undo callback: re-post task
+      if (lastDeletedTask) {
+        fetch("/api/understand", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcript: lastDeletedTask.title }),
+        }).then(() => loadTasks());
+      }
+    });
+  } catch (e) {
+    showError("Failed to delete task: " + e.message);
+    loadTasks();
+  }
+};
+
+// Batch Clear Completed Tasks
+els.clearCompletedBtn.addEventListener("click", async () => {
+  const completedCount = cachedTasks.filter((t) => t.status === "completed").length;
+  if (!completedCount) {
+    showToast("No completed tasks to clear.");
+    return;
+  }
+  try {
+    await fetch("/api/tasks/clear-completed", { method: "POST" });
+    showToast(`Cleared ${completedCount} completed task(s).`);
+    loadTasks();
+  } catch (e) {
+    showError("Failed to clear tasks: " + e.message);
+  }
+});
+
+// Filter Pills
+[els.pillAll, els.pillPending, els.pillCompleted].forEach((pill) => {
+  pill.addEventListener("click", () => {
+    [els.pillAll, els.pillPending, els.pillCompleted].forEach((p) => p.classList.remove("active"));
+    pill.classList.add("active");
+    currentFilter = pill.dataset.filter;
+    renderTaskList();
+  });
+});
+
+els.taskSearchInput.addEventListener("input", renderTaskList);
+
+// ---------- History View ----------
+async function loadHistory() {
+  try {
+    const r = await fetch("/api/history?limit=40");
+    const { history } = await r.json();
+    cachedHistory = history || [];
+    renderHistoryList();
+  } catch (e) {
+    console.error("Could not load history:", e);
+  }
+}
+
+function renderHistoryList() {
+  const query = (els.historySearchInput.value || "").trim().toLowerCase();
+  const filtered = cachedHistory.filter((h) => {
+    if (!query) return true;
+    return (h.transcript || "").toLowerCase().includes(query) || (h.intent || "").toLowerCase().includes(query);
+  });
+
+  if (!filtered.length) {
+    els.historyList.innerHTML = '<p class="empty">No recorded history found.</p>';
+    return;
+  }
+
+  els.historyList.innerHTML = filtered.map((h) => {
+    const rtlCls = isArabic(h.transcript) ? "rtl-text" : "";
+    return `
+      <div class="history-item">
+        <div class="h-meta">
+          <span>#${h.id} · <span class="badge ${h.intent}">${h.intent}</span></span>
+          <span>${(h.created_at || '').substring(0, 16).replace('T', ' ')}</span>
+        </div>
+        <div class="${rtlCls}">${escapeHtml(h.transcript)}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+els.historySearchInput.addEventListener("input", renderHistoryList);
+
+// ---------- Tabs & Wiring ----------
+els.tabTasksBtn.addEventListener("click", () => {
+  els.tabTasksBtn.classList.add("active");
+  els.tabHistoryBtn.classList.remove("active");
+  els.tasksView.style.display = "block";
+  els.historyView.style.display = "none";
+});
+
+els.tabHistoryBtn.addEventListener("click", () => {
+  els.tabHistoryBtn.classList.add("active");
+  els.tabTasksBtn.classList.remove("active");
+  els.tasksView.style.display = "none";
+  els.historyView.style.display = "block";
+  loadHistory();
+});
+
 els.recordBtn.addEventListener("click", () => {
   if (mediaRecorder && mediaRecorder.state === "recording") stopRecording();
   else startRecording();
 });
+
 els.runTextBtn.addEventListener("click", runFromText);
 
-SAMPLES.forEach((text, i) => {
+// Build Sample Buttons
+SAMPLES.forEach((s) => {
   const b = document.createElement("button");
-  b.textContent = "Sample " + (i + 1);
-  b.title = text;
-  b.addEventListener("click", () => { els.textFallback.value = text; });
+  b.textContent = s.label;
+  b.title = s.text;
+  b.addEventListener("click", () => {
+    els.textFallback.value = s.text;
+    els.textFallback.focus();
+  });
   els.samples.appendChild(b);
 });
 
+// Initial boot
+checkHealth();
 loadTasks();
+loadHistory();

@@ -1,47 +1,43 @@
 """
 Understanding layer: transcript -> intent classification + structured extraction.
 
-Two interchangeable "brains" behind the SAME strict-JSON contract, chosen at
-startup via the UNDERSTAND_BACKEND env var:
+Supports multilingual voice notes (Arabic, English, French, Spanish, German, Turkish, etc., or mixed).
+Classifies into:
+  - "task": action item / to-do
+  - "content": social media caption
+  - "summary": structured summary
+  - "query": question asking about past recorded notes/tasks (RAG)
 
-  - "openai" (default): gpt-4o via the OpenAI API.
-  - "local":            a small model (e.g. Qwen2.5-1.5B-Instruct) served by
-                        llama.cpp's OpenAI-compatible server.
-
-Both use grammar/schema-constrained decoding so the output is *forced* to be
-valid, parseable JSON — even from a 0.5-1.5B model. Everything here is
-defensive: any failure returns an `error` intent the UI renders gracefully.
+Interchangeable backends: "openai", "gemini", or "local" (Ollama / llama.cpp).
 """
 
 import json
 import os
+import time
 
 from openai import OpenAI
 
-SYSTEM_PROMPT = """You are an assistant that turns a spoken voice note (which may be
-in English, Arabic, or a code-switched mix of both) into a single structured record.
+import arabic_norm
 
-Classify the note into exactly one kind:
-- "task": the speaker wants something done / a to-do / a reminder / an assignment.
+SYSTEM_PROMPT = """You are an intelligent multilingual assistant that converts a spoken voice note into a single structured record.
+The user may speak in ANY language (Arabic, English, French, Spanish, German, Turkish, Russian, etc.) or a code-switched mix.
+
+Classify the note into exactly ONE kind:
+- "task": the speaker wants something done / a to-do / a reminder / an action item.
 - "content": the speaker wants a social media caption written (Instagram or LinkedIn).
-- "summary": the speaker is dictating notes/thoughts they want summarized.
+- "summary": the speaker is dictating thoughts or meeting notes they want summarized.
+- "query": the speaker is asking a question about their past notes, tasks, or information (e.g. "What did I do yesterday?", "Show me high priority tasks", "ما هي المهام المطلوبة مني؟").
 
-Then extract the fields for that kind. Rules:
-- Always respond in the SAME language the note is mostly in (Arabic in -> Arabic out).
-- For tasks: infer a concise title. owner/due_date are null if not mentioned.
-  due_date should be a natural phrase as spoken (e.g. "tomorrow", "next Friday", "غدا").
-  priority is one of low/medium/high (default medium if unclear).
-- For content: pick the most fitting platform, write a ready-to-post caption, and
-  name the tone (e.g. "professional", "playful", "inspirational").
-- For summary: write a tight summary_text and 2-5 key_points.
+Rules:
+- Always respond in the SAME language the note is mostly in (Arabic in -> Arabic out, French in -> French out, etc.).
+- For tasks: infer a concise title. owner and due_date are null if not mentioned.
+  due_date should be a natural phrase as spoken (e.g. "tomorrow", "next Friday", "غدا", "demain").
+  priority is one of "low", "medium", "high" (default "medium" if unclear).
+- For content: pick the most fitting platform, write a ready-to-post caption, and name the tone.
+- For summary: write a concise summary_text and 2-5 key_points.
+- For query: return the clean formulated question to search for in past notes.
 """
 
-# --- Strict JSON schema for structured / grammar-constrained outputs --------
-# A single `result` branch (anyOf) discriminated by `kind`. We derive the intent
-# from `result.kind` rather than a separate top-level field, so there's no way
-# for the model to pick a kind that disagrees with its data — one less failure
-# mode for a small local model. Each branch is fully specified (all keys
-# required, no extras); nullable fields use a ["string","null"] type.
 _TASK_BRANCH = {
     "type": "object",
     "additionalProperties": False,
@@ -54,6 +50,7 @@ _TASK_BRANCH = {
         "priority": {"type": "string", "enum": ["low", "medium", "high"]},
     },
 }
+
 _CONTENT_BRANCH = {
     "type": "object",
     "additionalProperties": False,
@@ -65,6 +62,7 @@ _CONTENT_BRANCH = {
         "tone": {"type": "string"},
     },
 }
+
 _SUMMARY_BRANCH = {
     "type": "object",
     "additionalProperties": False,
@@ -76,12 +74,22 @@ _SUMMARY_BRANCH = {
     },
 }
 
+_QUERY_BRANCH = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["kind", "question"],
+    "properties": {
+        "kind": {"type": "string", "enum": ["query"]},
+        "question": {"type": "string"},
+    },
+}
+
 RESPONSE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "required": ["result"],
     "properties": {
-        "result": {"anyOf": [_TASK_BRANCH, _CONTENT_BRANCH, _SUMMARY_BRANCH]},
+        "result": {"anyOf": [_TASK_BRANCH, _CONTENT_BRANCH, _SUMMARY_BRANCH, _QUERY_BRANCH]},
     },
 }
 
@@ -89,26 +97,31 @@ RESPONSE_FORMAT = {
     "type": "json_schema",
     "json_schema": {
         "name": "voice_insight",
-        "strict": True,          # honored by OpenAI; harmless/ignored by llama.cpp
+        "strict": True,
         "schema": RESPONSE_SCHEMA,
     },
 }
 
 
-# --- Backend selection -----------------------------------------------------
 def active_backend() -> str:
     return os.getenv("UNDERSTAND_BACKEND", "openai").strip().lower()
 
 
 def _resolve_client() -> tuple[OpenAI, str]:
     """Return (client, model_name) for the selected backend."""
-    if active_backend() == "local":
-        # llama.cpp's server is OpenAI-compatible; it ignores the API key but the
-        # SDK requires a non-empty string. The model name is whatever the server
-        # was launched with (llama-server accepts any name and ignores it).
+    backend = active_backend()
+    if backend == "local":
         base_url = os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:8080/v1")
         model = os.getenv("LOCAL_LLM_MODEL", "qwen2.5-1.5b-instruct")
         return OpenAI(base_url=base_url, api_key="sk-local-noop"), model
+
+    if backend == "gemini":
+        key = os.getenv("GEMINI_API_KEY")
+        if not key:
+            raise RuntimeError("GEMINI_API_KEY is not set — add it to your .env file.")
+        base_url = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
+        model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+        return OpenAI(base_url=base_url, api_key=key), model
 
     key = os.getenv("OPENAI_API_KEY")
     if not key:
@@ -122,26 +135,45 @@ def understand(transcript: str) -> dict:
     if not text:
         return {"intent": "error", "error": "Empty transcript — nothing to understand."}
 
+    # Pre-clean transcript (strips diacritics, eastern numerals, tatweel)
+    cleaned_text = arabic_norm.clean_transcript(text)
+
     try:
         client, model = _resolve_client()
-        resp = client.chat.completions.create(
-            model=model,
-            temperature=0.2,
-            response_format=RESPONSE_FORMAT,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text},
-            ],
-        )
-    except Exception as exc:  # network / auth / server down — surface it loudly
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                temperature=0.2,
+                response_format=RESPONSE_FORMAT,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": cleaned_text},
+                ],
+            )
+        except Exception as api_err:
+            err_msg = str(api_err)
+            if active_backend() == "gemini" and any(k in err_msg for k in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE")):
+                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+                    time.sleep(5)
+                fallback_model = "gemini-3.5-flash-lite" if model != "gemini-3.5-flash-lite" else "gemini-3.8-flash"
+                resp = client.chat.completions.create(
+                    model=fallback_model,
+                    temperature=0.2,
+                    response_format=RESPONSE_FORMAT,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": cleaned_text},
+                    ],
+                )
+            else:
+                raise api_err
+    except Exception as exc:
         hint = ""
         if active_backend() == "local":
-            hint = " (is the llama.cpp server running at LOCAL_LLM_BASE_URL?)"
+            hint = " (is the local LLM server running at LOCAL_LLM_BASE_URL?)"
         return {"intent": "error", "error": f"[{active_backend()}] request failed: {exc}{hint}"}
 
     choice = resp.choices[0]
-
-    # Structured-output refusals come back on a dedicated field (OpenAI only).
     refusal = getattr(choice.message, "refusal", None)
     if refusal:
         return {"intent": "error", "error": f"Model refused: {refusal}"}
@@ -157,7 +189,7 @@ def understand(transcript: str) -> dict:
         return {"intent": "error", "error": "Model returned an unexpected shape.", "raw": parsed}
 
     intent = result.get("kind")
-    if intent not in ("task", "content", "summary"):
+    if intent not in ("task", "content", "summary", "query"):
         return {"intent": "error", "error": f"Unknown kind: {intent!r}", "raw": parsed}
 
     return {"intent": intent, "data": result}

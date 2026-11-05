@@ -18,18 +18,22 @@ Intents & extracted data:
 | `content` | `platform` (instagram/linkedin), `caption`, `tone`| Return a ready-to-post caption           |
 | `summary` | `summary_text`, `key_points[]`                    | Return the structured summary            |
 
-No database — tasks live in memory for the process lifetime.
+Persistent SQLite database (data/insights.db) with FTS5 search.
 
 ## Files
 
 | File                | Role                                              |
 |---------------------|---------------------------------------------------|
-| `main.py`           | FastAPI app + routes                              |
-| `stt.py`            | Transcription — OpenAI API *or* local Whisper     |
-| `understand.py`     | Classification/extraction — OpenAI *or* local SLM |
-| `actions.py`        | Intent → action (in-memory tasks, Notion push)    |
-| `static/index.html` | Single-page UI                                    |
-| `static/app.js`     | Mic capture (sends raw audio), staged UI          |
+| main.py           | FastAPI app + routes                              |
+| stt.py            | Multilingual transcription (Whisper or OpenAI)    |
+| understand.py     | Classification/extraction (Gemini, OpenAI, local) |
+| ctions.py        | Intent -> action (SQLite storage, Notion sync, RAG)|
+| db.py             | SQLite persistence + FTS5 full-text search        |
+| rabic_norm.py    | Dialect normalization, diacritics & search clean  |
+| 
+ag.py            | Voice RAG search engine over recorded notes       |
+| static/index.html | Dashboard UI with tasks, history & RAG cards      |
+| static/app.js     | Mic capture, interactive task checklist, tabs     |
 
 ## Setup
 

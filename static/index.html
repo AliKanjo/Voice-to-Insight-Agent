@@ -6,149 +6,354 @@
   <title>Voice-to-Insight Agent</title>
   <style>
     :root {
-      --bg: #0f1117;
-      --panel: #1a1d27;
-      --panel-2: #232734;
-      --text: #f5f7fa;
-      --muted: #9aa4b2;
-      --accent: #6ea8fe;
-      --green: #3ddc84;
-      --red: #ff5c5c;
-      --amber: #ffca3a;
+      --bg: #0d1117;
+      --panel: #161b22;
+      --panel-2: #21262d;
+      --border: #30363d;
+      --text: #f0f6fc;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --red: #f85149;
+      --amber: #d29922;
+      --purple: #bc8cff;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans Arabic", sans-serif;
       background: var(--bg);
       color: var(--text);
       line-height: 1.5;
     }
     header {
-      padding: 24px 32px;
-      border-bottom: 1px solid #2a2e3a;
+      padding: 20px 32px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      background: rgba(22, 27, 34, 0.6);
+      backdrop-filter: blur(10px);
     }
-    header h1 { margin: 0; font-size: 28px; }
-    header p { margin: 4px 0 0; color: var(--muted); }
+    header h1 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.02em; }
+    header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+    .status-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+    .chip {
+      font-size: 11px; padding: 4px 10px; border-radius: 999px;
+      background: var(--panel-2); color: var(--muted); border: 1px solid var(--border);
+      font-weight: 500;
+    }
+    .chip.active { color: var(--green); border-color: rgba(63, 185, 80, 0.4); background: rgba(63, 185, 80, 0.1); }
+
     .wrap {
       display: grid;
-      grid-template-columns: 1.4fr 1fr;
+      grid-template-columns: 1.35fr 1fr;
       gap: 24px;
       padding: 24px 32px;
-      max-width: 1400px;
+      max-width: 1440px;
     }
-    @media (max-width: 960px) { .wrap { grid-template-columns: 1fr; } }
+    @media (max-width: 980px) { .wrap { grid-template-columns: 1fr; } }
 
     .card {
       background: var(--panel);
-      border: 1px solid #2a2e3a;
-      border-radius: 14px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
       padding: 20px;
       margin-bottom: 20px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.2);
     }
-    h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 14px; }
+    .card-title {
+      font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--muted); margin: 0 0 16px; display: flex; justify-content: space-between; align-items: center;
+      font-weight: 700;
+    }
+
+    /* Buttons */
+    button {
+      font: inherit; cursor: pointer; border: none; border-radius: 8px;
+      padding: 10px 16px; font-weight: 600; color: #0d1117;
+      background: var(--accent); transition: all 0.15s ease;
+      display: inline-flex; align-items: center; gap: 6px; justify-content: center;
+    }
+    button:hover { opacity: 0.9; transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .btn-secondary {
+      background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { background: #30363d; }
+    .btn-danger {
+      background: rgba(248, 81, 73, 0.15); color: var(--red); border: 1px solid rgba(248, 81, 73, 0.3);
+    }
+    .btn-danger:hover { background: rgba(248, 81, 73, 0.3); }
 
     /* Record controls */
-    .rec-row { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
-    button {
-      font: inherit;
-      cursor: pointer;
-      border: none;
-      border-radius: 10px;
-      padding: 14px 22px;
-      font-weight: 600;
-      color: #0f1117;
-      background: var(--accent);
-    }
-    button:disabled { opacity: .5; cursor: not-allowed; }
-    #recordBtn { font-size: 20px; padding: 20px 30px; }
+    .rec-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+    #recordBtn { font-size: 16px; padding: 14px 24px; border-radius: 10px; }
     #recordBtn.recording { background: var(--red); color: #fff; animation: pulse 1s infinite; }
-    @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(255,92,92,.5);} 50% { box-shadow: 0 0 0 14px rgba(255,92,92,0);} }
-    .indicator { display: flex; align-items: center; gap: 8px; color: var(--muted); }
-    .dot { width: 12px; height: 12px; border-radius: 50%; background: #444; }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(248, 81, 73, 0.6); }
+      50% { box-shadow: 0 0 0 12px rgba(248, 81, 73, 0); }
+    }
+    .rec-timer { font-family: ui-monospace, monospace; font-size: 15px; font-weight: 700; color: var(--red); display: none; }
+    .indicator { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #444; }
     .dot.live { background: var(--red); }
 
-    /* waveform bars */
-    #meter { display: flex; align-items: flex-end; gap: 3px; height: 40px; }
-    #meter span { width: 5px; background: var(--accent); border-radius: 3px; height: 4px; transition: height .06s; }
+    /* Meter */
+    #meter { display: flex; align-items: flex-end; gap: 3px; height: 32px; }
+    #meter span { width: 4px; background: var(--accent); border-radius: 2px; height: 4px; transition: height 0.05s; }
 
-    textarea {
-      width: 100%; min-height: 90px; margin-top: 10px;
-      background: var(--panel-2); color: var(--text);
-      border: 1px solid #333; border-radius: 10px; padding: 12px; font: inherit; resize: vertical;
+    /* Audio Playback Bar */
+    #audioPlaybackWrap {
+      display: none; margin-bottom: 14px; padding: 10px 14px;
+      background: var(--panel-2); border-radius: 8px; border: 1px solid var(--border);
+      align-items: center; gap: 12px;
     }
-    .samples { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-    .samples button { background: var(--panel-2); color: var(--text); padding: 8px 12px; font-size: 13px; font-weight: 500; }
+    #audioPlayer { width: 100%; height: 36px; border-radius: 6px; }
+
+    /* Text & Dropzone */
+    textarea {
+      width: 100%; min-height: 80px; margin-top: 10px;
+      background: var(--panel-2); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px; padding: 12px; font: inherit; resize: vertical;
+    }
+    textarea:focus { outline: none; border-color: var(--accent); }
+    .samples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .samples button {
+      background: var(--panel-2); color: var(--muted); padding: 5px 10px; font-size: 12px;
+      font-weight: 500; border: 1px solid var(--border);
+    }
+    .samples button:hover { color: var(--text); border-color: #555; }
 
     /* Error banner */
     #errorBanner {
-      display: none; background: #3a1a1a; border: 1px solid var(--red);
-      color: #ffd7d7; padding: 14px 18px; border-radius: 10px; margin: 0 32px 0;
-      white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 14px;
+      display: none; background: #3c1418; border: 1px solid var(--red);
+      color: #ffb4af; padding: 12px 18px; border-radius: 8px; margin: 16px 32px 0;
+      white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 13px;
     }
 
     /* Stage pipeline */
-    .stage { border-left: 3px solid #333; padding: 4px 0 4px 16px; margin-bottom: 14px; }
+    .stage { border-left: 3px solid var(--border); padding: 4px 0 4px 16px; margin-bottom: 16px; }
     .stage.done { border-color: var(--green); }
     .stage.active { border-color: var(--amber); }
     .stage.err { border-color: var(--red); }
-    .stage .label { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
-    .stage .body { margin-top: 4px; font-size: 18px; word-break: break-word; }
-    pre { background: var(--panel-2); border-radius: 10px; padding: 14px; overflow-x: auto; font-size: 15px; margin: 6px 0 0; }
+    .stage-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+    .stage .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 700; }
+    .stage .body { font-size: 15px; word-break: break-word; }
+    .copy-btn {
+      background: transparent; color: var(--muted); border: 1px solid var(--border);
+      padding: 2px 8px; font-size: 11px; border-radius: 4px;
+    }
+    .copy-btn:hover { color: var(--text); background: var(--panel-2); }
+    pre { background: var(--panel-2); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 13px; margin: 6px 0 0; border: 1px solid var(--border); }
 
-    .badge { display: inline-block; padding: 4px 12px; border-radius: 999px; font-weight: 700; font-size: 15px; }
-    .badge.task { background: #16324f; color: var(--accent); }
-    .badge.content { background: #3a2a12; color: var(--amber); }
-    .badge.summary { background: #123a2a; color: var(--green); }
-    .badge.error { background: #3a1a1a; color: var(--red); }
-    .locale { color: var(--muted); font-size: 14px; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; font-weight: 700; font-size: 12px; }
+    .badge.task { background: rgba(88,166,255,0.15); color: var(--accent); border: 1px solid rgba(88,166,255,0.3); }
+    .badge.content { background: rgba(210,153,34,0.15); color: var(--amber); border: 1px solid rgba(210,153,34,0.3); }
+    .badge.summary { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+    .badge.query { background: rgba(188,140,255,0.15); color: var(--purple); border: 1px solid rgba(188,140,255,0.3); }
+    .badge.error { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid rgba(248,81,73,0.3); }
+    .locale { color: var(--muted); font-size: 12px; }
 
-    /* Task list */
-    .task-item { background: var(--panel-2); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
-    .task-item .t { font-size: 17px; font-weight: 600; }
-    .task-item .meta { color: var(--muted); font-size: 14px; margin-top: 2px; }
-    .pri { padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; }
-    .pri.high { background:#4f1616;color:#ff8f8f;} .pri.medium{background:#4f4016;color:#ffd97a;} .pri.low{background:#16324f;color:#8fc0ff;}
-    .empty { color: var(--muted); }
+    /* RTL Arabic Helper */
+    .rtl-text { direction: rtl; text-align: right; font-family: "Noto Sans Arabic", "Segoe UI", Tahoma, sans-serif; }
+
+    /* Task list & Tabs */
+    .panel-tabs { display: flex; gap: 6px; }
+    .tab-btn {
+      background: transparent; color: var(--muted); padding: 5px 12px;
+      border-radius: 6px; font-size: 12px; font-weight: 600;
+    }
+    .tab-btn.active { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+
+    /* Task Filter Bar */
+    .task-toolbar {
+      display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px; flex-wrap: wrap;
+    }
+    .filter-pills { display: flex; gap: 4px; }
+    .filter-pill {
+      background: transparent; color: var(--muted); border: 1px solid transparent;
+      padding: 4px 8px; font-size: 11px; border-radius: 6px; cursor: pointer; font-weight: 600;
+    }
+    .filter-pill.active { background: var(--panel-2); color: var(--text); border-color: var(--border); }
+    .clear-btn { font-size: 11px; padding: 4px 8px; }
+
+    /* Search Box */
+    .search-input {
+      width: 100%; padding: 8px 12px; background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 13px; margin-bottom: 12px;
+    }
+    .search-input:focus { outline: none; border-color: var(--accent); }
+
+    .task-item {
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px 14px; margin-bottom: 8px; display: flex; align-items: flex-start;
+      justify-content: space-between; gap: 12px; transition: border-color 0.15s ease;
+    }
+    .task-item:hover { border-color: #484f58; }
+    .task-item.completed { opacity: 0.6; }
+    .task-item.completed .t { text-decoration: line-through; }
+    .task-left { display: flex; gap: 12px; align-items: flex-start; flex: 1; }
+    .task-check { margin-top: 4px; cursor: pointer; width: 18px; height: 18px; accent-color: var(--green); }
+    .task-item .t { font-size: 15px; font-weight: 600; line-height: 1.4; }
+    .task-item .meta { color: var(--muted); font-size: 12px; margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .task-actions { display: flex; gap: 4px; align-items: center; }
+    .del-btn {
+      background: transparent; color: var(--muted); padding: 4px 8px; font-size: 13px; border-radius: 6px;
+    }
+    .del-btn:hover { color: var(--red); background: rgba(248,81,73,0.15); }
+
+    .pri { padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+    .pri.high { background: rgba(248,81,73,0.15); color: #ff7b72; border: 1px solid rgba(248,81,73,0.3); }
+    .pri.medium { background: rgba(210,153,34,0.15); color: #e3b341; border: 1px solid rgba(210,153,34,0.3); }
+    .pri.low { background: rgba(88,166,255,0.15); color: #79c0ff; border: 1px solid rgba(88,166,255,0.3); }
+
+    .notion-pill {
+      display: inline-flex; align-items: center; gap: 4px;
+      background: rgba(188,140,255,0.12); color: #d2a8ff; border: 1px solid rgba(188,140,255,0.25);
+      padding: 1px 6px; border-radius: 4px; text-decoration: none; font-size: 11px; font-weight: 600;
+    }
+    .notion-pill:hover { background: rgba(188,140,255,0.2); }
+
+    /* RAG query box */
+    .rag-box {
+      background: rgba(88,166,255,0.06); border: 1px solid rgba(88,166,255,0.25);
+      border-radius: 8px; padding: 14px; margin-top: 8px;
+    }
+    .rag-answer { font-size: 15px; font-weight: 500; color: #f0f6fc; margin-bottom: 10px; line-height: 1.6; }
+    .citations-header { font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.08em; margin-bottom: 6px; font-weight: 700; }
+    .citation-item {
+      font-size: 12px; color: var(--muted); padding: 5px 8px; background: rgba(255,255,255,0.03); border-radius: 6px; margin-bottom: 4px;
+      border-left: 2px solid var(--accent);
+    }
+    .citation-item strong { color: var(--text); }
+
+    /* History list */
+    .history-item {
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; font-size: 13px;
+    }
+    .history-item .h-meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; display: flex; justify-content: space-between; }
+    .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 24px 0; }
+
+    /* Toast Notification */
+    #toast {
+      position: fixed; bottom: 24px; right: 24px; z-index: 1000;
+      background: #1f242c; border: 1px solid var(--border); color: var(--text);
+      padding: 12px 18px; border-radius: 8px; font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+      display: none; align-items: center; gap: 12px; animation: slideUp 0.2s ease;
+    }
+    @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    #toastUndoBtn { background: transparent; color: var(--accent); border: none; padding: 0; font-size: 13px; font-weight: 700; cursor: pointer; }
+    #toastUndoBtn:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
   <header>
-    <h1>🎙️ Voice-to-Insight Agent</h1>
-    <p>Record a voice note (Arabic, English, or both) → transcribe → classify → act.</p>
+    <div>
+      <h1>🎙️ Voice-to-Insight Agent</h1>
+      <p>Speak or upload voice notes in any language → Real-time Transcribe → Normalize → Act & Voice RAG.</p>
+    </div>
+    <div class="status-chips">
+      <span class="chip active" id="sttChip">STT: Whisper</span>
+      <span class="chip active" id="llmChip">LLM: Gemini</span>
+      <span class="chip active" id="dbChip">DB: SQLite</span>
+      <span class="chip" id="notionChip">Notion</span>
+    </div>
   </header>
 
   <div id="errorBanner"></div>
 
   <div class="wrap">
     <div>
+      <!-- Voice / Audio Input Card -->
       <div class="card">
-        <h2>1 · Voice input</h2>
+        <div class="card-title">
+          <span>1 · Voice / Audio Input</span>
+          <span class="indicator">
+            <span class="dot" id="recDot"></span>
+            <span id="recStatus">Idle</span>
+          </span>
+        </div>
+
         <div class="rec-row">
-          <button id="recordBtn">● Record</button>
-          <div class="indicator"><span class="dot" id="recDot"></span><span id="recStatus">Idle</span></div>
+          <button id="recordBtn">● Record Voice</button>
+          <span class="rec-timer" id="recTimer">00:00</span>
+          
+          <input type="file" id="audioFileInput" accept="audio/*,.mp3,.wav,.m4a,.webm,.ogg" style="display:none;">
+          <button class="btn-secondary" id="uploadAudioBtn">📁 Upload Audio</button>
+          
           <div id="meter"></div>
         </div>
 
-        <textarea id="textFallback" placeholder="…or paste Arabic / English text here and skip the mic (fallback path)."></textarea>
+        <!-- Audio Playback Widget -->
+        <div id="audioPlaybackWrap">
+          <span style="font-size: 12px; color: var(--muted); white-space: nowrap;">🎧 Playback:</span>
+          <audio id="audioPlayer" controls></audio>
+        </div>
+
+        <!-- Text Input Fallback -->
+        <textarea id="textFallback" placeholder="…or type / paste text here in any language (Arabic, English, French, etc.)"></textarea>
+        
         <div class="samples" id="samples"></div>
-        <div style="margin-top:10px">
-          <button id="runTextBtn" style="background:var(--panel-2);color:var(--text)">Run text → understand</button>
+        
+        <div style="margin-top:12px; display: flex; gap: 10px;">
+          <button id="runTextBtn" class="btn-secondary">Run Text → Understand</button>
         </div>
       </div>
 
+      <!-- Pipeline Execution Card -->
       <div class="card" id="pipelineCard">
-        <h2>Pipeline</h2>
-        <div id="pipeline"><p class="empty">Record or run text to see the chain light up.</p></div>
+        <div class="card-title">
+          <span>Pipeline Execution</span>
+          <span id="pipelineStatus" style="font-size: 11px; color: var(--muted);">Ready</span>
+        </div>
+        <div id="pipeline"><p class="empty">Record or run text to see the chain execute live.</p></div>
       </div>
     </div>
 
+    <!-- Right Column: Storage & Tasks -->
     <div>
       <div class="card">
-        <h2>Running tasks</h2>
-        <div id="tasks"><p class="empty">No tasks yet.</p></div>
+        <div class="card-title">
+          <span>Workspace Storage</span>
+          <div class="panel-tabs">
+            <button class="tab-btn active" id="tabTasksBtn">Tasks</button>
+            <button class="tab-btn" id="tabHistoryBtn">History</button>
+          </div>
+        </div>
+
+        <!-- Tasks View -->
+        <div id="tasksView">
+          <input type="text" class="search-input" id="taskSearchInput" placeholder="🔍 Filter tasks by title or owner…">
+          
+          <div class="task-toolbar">
+            <div class="filter-pills">
+              <button class="filter-pill active" data-filter="all" id="pillAll">All <span id="countAll">0</span></button>
+              <button class="filter-pill" data-filter="pending" id="pillPending">Pending <span id="countPending">0</span></button>
+              <button class="filter-pill" data-filter="completed" id="pillCompleted">Done <span id="countCompleted">0</span></button>
+            </div>
+            <button class="btn-secondary clear-btn" id="clearCompletedBtn">Clear Done</button>
+          </div>
+
+          <div id="tasks"><p class="empty">Loading tasks…</p></div>
+        </div>
+
+        <!-- History View -->
+        <div id="historyView" style="display:none;">
+          <input type="text" class="search-input" id="historySearchInput" placeholder="🔍 Search recorded history…">
+          <div id="historyList"><p class="empty">Loading history…</p></div>
+        </div>
       </div>
     </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast">
+    <span id="toastMsg">Notification</span>
+    <button id="toastUndoBtn">Undo</button>
   </div>
 
   <script src="/static/app.js"></script>
