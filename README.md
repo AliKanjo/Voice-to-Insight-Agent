@@ -1,4 +1,3 @@
--- Active: 1749986754662@@psql-qfmabot-dev.postgres.database.azure.com@5432
 # 🎙️ Voice-to-Insight Agent
 
 A small demo app for a live coding webinar. Record a voice note in **Arabic, English, or a mix of both** → the app transcribes it, classifies the intent, extracts structured data, and takes an action.
