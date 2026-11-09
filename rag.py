@@ -51,7 +51,7 @@ def answer_query(question: str, client: Any = None, model: str = None) -> dict:
 
         line = f"[Note #{note_id} | {created} | Type: {intent}]: {transcript}"
         if intent == "task" and raw_data:
-            line += f" -> Task: {raw_data.get('title')} (Due: {raw_data.get('due_date')}, Priority: {raw_data.get('priority')})"
+            line += f" -> Task: {raw_data.get('title')} (Due: {raw_data.get('due_date')}{' = ' + raw_data['due_date_iso'] if raw_data.get('due_date_iso') else ''}, Priority: {raw_data.get('priority')})"
         elif intent == "summary" and raw_data:
             line += f" -> Summary: {raw_data.get('summary_text')}"
 

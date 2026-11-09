@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # Catches dependency drift like faster-whisper's missing `requests`.
+      - name: Check local Whisper imports
+        run: python -c "import faster_whisper; print('faster-whisper', faster_whisper.__version__)"
+
+      - name: Check frontend JavaScript syntax
+        run: node --check static/app.js
+
+      - name: Run tests
+        run: python -m pytest -q

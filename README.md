@@ -14,7 +14,7 @@ Intents & extracted data:
 
 | Intent    | Extracted fields                                   | Action                                                  |
 |-----------|----------------------------------------------------|---------------------------------------------------------|
-| `task`    | `title`, `owner?`, `due_date?`, `priority`         | Saved to SQLite (+ pushed to Notion if configured)      |
+| `task`    | `title`, `owner?`, `due_date?`, `due_date_iso?`, `priority` | Saved to SQLite (+ pushed to Notion if configured)      |
 | `content` | `platform` (instagram/linkedin), `caption`, `tone` | Saved to SQLite, returns a ready-to-post caption        |
 | `summary` | `summary_text`, `key_points[]`                     | Saved to SQLite, returns the structured summary         |
 | `query`   | `question`                                         | Voice RAG: searches past notes and answers from them    |
@@ -79,6 +79,8 @@ Set these in your hosting platform's environment (they take precedence over any 
 - `APP_PASSWORD` (and optionally `APP_USERNAME`, default `admin`) — turns on HTTP Basic auth for the UI and API. **Without it the app is open to anyone.**
 - `DB_PATH` — put the SQLite file on a persistent volume, e.g. `/var/data/insights.db`.
 - `RATE_LIMIT_PER_MINUTE` — per-IP limit on the transcribe / understand / RAG endpoints (default 20).
+- `APP_TIMEZONE` — your time zone (e.g. `Asia/Beirut`), so "tomorrow" resolves to the right date.
+- `LLM_TIMEOUT_SECONDS` / `STT_TIMEOUT_SECONDS` — give up on a slow provider after this long (defaults 60 / 120).
 
 Run without `--reload`, and pass proxy headers through if you sit behind a load balancer:
 
@@ -153,4 +155,17 @@ With `TRANSCRIBE_BACKEND=openai`, `gpt-4o-transcribe` auto-detects language and 
 
 ### Notion (optional)
 
-The push in `actions.py` assumes your Notion database has a title property named **`Name`** and, optionally, a select property named **`Priority`** (Low / Medium / High). If the `Priority` column is missing it retries with just the title. Adjust the `properties` payload there if your schema differs.
+The push in `actions.py` assumes your Notion database has a title property named **`Name`**, and optionally a **Select** property for priority (Low / Medium / High) and a **Date** property for the due date. Their names default to `Priority` and `Due Date`; change them with `NOTION_PRIORITY_PROPERTY` and `NOTION_DUE_PROPERTY`. If Notion rejects the payload because a column is missing, the task is retried without the due date, then with the title only.
+
+### Due dates
+
+For tasks, the model returns both the deadline as spoken (`due_date`, e.g. "before Friday") and the resolved calendar date (`due_date_iso`, e.g. `2026-11-13`). Relative dates are resolved against today's date in `APP_TIMEZONE` (default UTC). Invalid dates from the model are dropped. The dashboard shows the resolved date and flags pending tasks past it as **overdue**.
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+The suite uses a fake language model and a temporary SQLite database, so it needs no API keys or network. GitHub Actions runs it on every pull request and push to `main` (`.github/workflows/ci.yml`), along with an import check for `faster-whisper` and a syntax check of `static/app.js`.
