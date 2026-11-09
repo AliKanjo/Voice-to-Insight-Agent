@@ -129,7 +129,7 @@ async function checkHealth() {
 function renderPipeline(state) {
   const s = (cls, label, bodyHtml, copyVal = null) => {
     const copyBtn = copyVal
-      ? `<button class="copy-btn" onclick="copyText(${escapeAttr(JSON.stringify(copyVal))})">📋 Copy</button>`
+      ? `<button class="copy-btn" data-copy="${escapeHtml(copyVal)}">📋 Copy</button>`
       : "";
     return `
       <div class="stage ${cls}">
@@ -153,7 +153,7 @@ function renderPipeline(state) {
       const rtlCls = isArabic(text) ? "rtl-text" : "";
       html += s(
         "done",
-        `① Speech-to-Text <span class="locale">(${state.transcript.locale || "detected"})</span>`,
+        `① Speech-to-Text <span class="locale">(${escapeHtml(state.transcript.locale || "detected")})</span>`,
         `<div class="${rtlCls}">${escapeHtml(text)}</div>`,
         text
       );
@@ -170,7 +170,7 @@ function renderPipeline(state) {
       html += s(
         "done",
         "② Understanding & Extraction",
-        `<span class="badge ${intent}">${intent}</span>` +
+        `<span class="badge ${escapeHtml(intent)}">${escapeHtml(intent)}</span>` +
         `<pre>${escapeHtml(JSON.stringify(state.classify.data, null, 2))}</pre>`,
         JSON.stringify(state.classify.data, null, 2)
       );
@@ -215,7 +215,7 @@ function renderAction(action) {
       <div>
         📝 Caption for <strong>${escapeHtml(action.platform || "Social")}</strong> (${escapeHtml(action.tone || "General")}):
         <div class="rag-box ${rtlCls}">${escapeHtml(action.caption)}</div>
-        <button class="btn-secondary copy-btn" style="margin-top:8px;" onclick="copyText(${escapeAttr(JSON.stringify(action.caption))})">📋 Copy Caption</button>
+        <button class="btn-secondary copy-btn" style="margin-top:8px;" data-copy="${escapeHtml(action.caption)}">📋 Copy Caption</button>
       </div>`;
   }
 
@@ -242,7 +242,7 @@ function renderAction(action) {
       <div class="rag-box">
         <div class="rag-answer ${rtlCls}">💬 ${escapeHtml(action.answer)}</div>
         ${citationsHtml}
-        <button class="btn-secondary copy-btn" style="margin-top:8px;" onclick="copyText(${escapeAttr(JSON.stringify(action.answer))})">📋 Copy Answer</button>
+        <button class="btn-secondary copy-btn" style="margin-top:8px;" data-copy="${escapeHtml(action.answer)}">📋 Copy Answer</button>
       </div>`;
   }
 
@@ -254,9 +254,13 @@ function escapeHtml(str) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-function escapeAttr(str) {
-  return String(str || "").replace(/"/g, '&quot;');
-}
+// Copy buttons carry their text in an HTML-escaped data-copy attribute and are
+// handled by one delegated listener. Never interpolate model output into inline
+// onclick handlers: HTML entities in the text are decoded before the JS runs.
+document.addEventListener("click", (ev) => {
+  const btn = ev.target.closest("[data-copy]");
+  if (btn) copyText(btn.dataset.copy);
+});
 
 // ---------- Pipeline Driver ----------
 async function runUnderstand(transcript, state, locale = "") {

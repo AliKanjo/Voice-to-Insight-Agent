@@ -16,19 +16,24 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-load_dotenv(override=True)
+# Never override: variables set by the hosting platform must win over a stray .env file.
+load_dotenv()
 
 import actions
 import db
 import rag
+import security
 import stt
 import understand
 
 app = FastAPI(title="Voice-to-Insight Agent")
+app.middleware("http")(security.security_middleware)
+security.warn_if_open()
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
@@ -44,6 +49,12 @@ class RagRequest(BaseModel):
 
 
 # --- Health / config ------------------------------------------------------
+@app.get("/healthz")
+def healthz() -> dict:
+    """Unauthenticated liveness probe for the hosting platform."""
+    return {"ok": True}
+
+
 @app.get("/api/health")
 def health() -> dict:
     """Report backend configuration and active models."""
@@ -54,7 +65,8 @@ def health() -> dict:
         "transcribe_backend": stt.active_backend(),
         "understand_backend": understand.active_backend(),
         "notion_configured": bool(os.getenv("NOTION_API_KEY") and os.getenv("NOTION_DATABASE_ID")),
-        "database": "sqlite (data/insights.db)",
+        "database": "sqlite",
+        "auth_enabled": security.auth_enabled(),
         "arabic_normalization": True,
         "rag_enabled": True,
     }
@@ -72,7 +84,8 @@ async def transcribe(audio: UploadFile) -> JSONResponse:
             tmp.write(data)
             tmp_path = tmp.name
 
-        result = stt.transcribe(tmp_path)
+        # Whisper is CPU-bound and synchronous; keep it off the event loop.
+        result = await run_in_threadpool(stt.transcribe, tmp_path)
         return JSONResponse(result)
     except stt.STTError as exc:
         return JSONResponse({"error": str(exc), "stage": "transcribe"}, status_code=502)

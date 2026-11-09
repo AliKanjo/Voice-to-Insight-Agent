@@ -118,7 +118,8 @@ def _get_local_model():
         from faster_whisper import WhisperModel
     except ImportError as exc:
         raise STTError(
-            "faster-whisper is not installed. Run: pip install faster-whisper"
+            f"Could not import faster-whisper ({exc}). "
+            "Install the pinned dependencies with: pip install -r requirements.txt"
         ) from exc
 
     try:

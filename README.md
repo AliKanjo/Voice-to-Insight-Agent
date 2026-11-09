@@ -65,6 +65,22 @@ Open <http://localhost:8000>.
 
 Check integration status any time at <http://localhost:8000/api/health>.
 
+## Deploying
+
+Set these in your hosting platform's environment (they take precedence over any `.env` file):
+
+- `APP_PASSWORD` (and optionally `APP_USERNAME`, default `admin`) — turns on HTTP Basic auth for the UI and API. **Without it the app is open to anyone.**
+- `DB_PATH` — put the SQLite file on a persistent volume, e.g. `/var/data/insights.db`.
+- `RATE_LIMIT_PER_MINUTE` — per-IP limit on the transcribe / understand / RAG endpoints (default 20).
+
+Run without `--reload`, and pass proxy headers through if you sit behind a load balancer:
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'
+```
+
+`/healthz` is an unauthenticated liveness probe for the platform's health checks.
+
 ## Demo tips (live path)
 
 - **Start green without a mic:** you only need `OPENAI_API_KEY`. Paste text into the fallback box (or click a **Sample** button) and hit **Run text → understand**. The whole classify → extract → act chain runs without touching the mic or transcription at all.

@@ -13,8 +13,12 @@ from typing import Any, Optional
 
 import arabic_norm
 
-DB_DIR = os.path.join(os.path.dirname(__file__), "data")
-DB_PATH = os.path.join(DB_DIR, "insights.db")
+# Override with DB_PATH in production and point it at a persistent volume
+# (e.g. /var/data/insights.db); container filesystems are wiped on redeploy.
+DB_PATH = os.path.abspath(
+    os.getenv("DB_PATH") or os.path.join(os.path.dirname(__file__), "data", "insights.db")
+)
+DB_DIR = os.path.dirname(DB_PATH)
 
 
 def _now_iso() -> str:

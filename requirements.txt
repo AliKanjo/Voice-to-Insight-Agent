@@ -7,3 +7,12 @@ httpx==0.28.1
 
 # Local Whisper (only needed when TRANSCRIBE_BACKEND=local)
 faster-whisper==1.1.1
+
+# Transitive deps pinned to versions verified to work together.
+# huggingface-hub 2.x no longer installs `requests`, which faster-whisper 1.1.1 imports.
+requests==2.34.2
+huggingface-hub==2.4.0
+ctranslate2==4.8.5
+av==19.0.2
+onnxruntime==1.31.1
+tokenizers==0.23.3
