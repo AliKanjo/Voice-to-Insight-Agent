@@ -1,39 +1,41 @@
 # 🎙️ Voice-to-Insight Agent
 
-A small demo app for a live coding webinar. Record a voice note in **Arabic, English, or a mix of both** → the app transcribes it, classifies the intent, extracts structured data, and takes an action.
+Record or upload a voice note in **Arabic (including dialects), English, French, or a mix** → the app transcribes it, classifies the intent, extracts structured data, takes an action, and stores everything so you can ask questions about past notes later.
 
 ```
-audio ─▶ /api/transcribe ─▶ /api/understand ─▶ action
-          (OpenAI or           (OpenAI or
-           local Whisper)       local SLM)
+audio ─▶ /api/transcribe ─▶ /api/understand ─▶ action ─▶ SQLite (+ optional Notion)
+          (local Whisper        (Gemini, OpenAI,
+           or OpenAI)            or local SLM)
 ```
 
-Each stage runs **either in the cloud or fully on your machine**, flipped independently by one env var — so you can demo a 100% offline pipeline and still fall back mid-stream.
+Each stage runs **either in the cloud or fully on your machine**, flipped independently by one env var.
 
 Intents & extracted data:
 
-| Intent    | Extracted fields                                  | Action                                   |
-|-----------|---------------------------------------------------|------------------------------------------|
-| `task`    | `title`, `owner?`, `due_date?`, `priority`        | Add to in-memory list (+ optional Notion) |
-| `content` | `platform` (instagram/linkedin), `caption`, `tone`| Return a ready-to-post caption           |
-| `summary` | `summary_text`, `key_points[]`                    | Return the structured summary            |
+| Intent    | Extracted fields                                   | Action                                                  |
+|-----------|----------------------------------------------------|---------------------------------------------------------|
+| `task`    | `title`, `owner?`, `due_date?`, `priority`         | Saved to SQLite (+ pushed to Notion if configured)      |
+| `content` | `platform` (instagram/linkedin), `caption`, `tone` | Saved to SQLite, returns a ready-to-post caption        |
+| `summary` | `summary_text`, `key_points[]`                     | Saved to SQLite, returns the structured summary         |
+| `query`   | `question`                                         | Voice RAG: searches past notes and answers from them    |
 
-Persistent SQLite database (data/insights.db) with FTS5 search.
+Everything is persisted in SQLite (default `data/insights.db`, configurable with `DB_PATH`) with an FTS5 full-text index used for RAG.
 
 ## Files
 
-| File                | Role                                              |
-|---------------------|---------------------------------------------------|
-| main.py           | FastAPI app + routes                              |
-| stt.py            | Multilingual transcription (Whisper or OpenAI)    |
-| understand.py     | Classification/extraction (Gemini, OpenAI, local) |
-| ctions.py        | Intent -> action (SQLite storage, Notion sync, RAG)|
-| db.py             | SQLite persistence + FTS5 full-text search        |
-| rabic_norm.py    | Dialect normalization, diacritics & search clean  |
-| 
-ag.py            | Voice RAG search engine over recorded notes       |
-| static/index.html | Dashboard UI with tasks, history & RAG cards      |
-| static/app.js     | Mic capture, interactive task checklist, tabs     |
+| File                | Role                                                     |
+|---------------------|----------------------------------------------------------|
+| `main.py`           | FastAPI app + routes                                     |
+| `security.py`       | Optional Basic auth + per-IP rate limiting               |
+| `errors.py`         | Error policy: log details, show clients generic messages |
+| `stt.py`            | Multilingual transcription (local Whisper or OpenAI)     |
+| `understand.py`     | Classification/extraction (Gemini, OpenAI, or local)     |
+| `actions.py`        | Intent → action (SQLite storage, Notion sync, RAG)       |
+| `db.py`             | SQLite persistence + FTS5 full-text search               |
+| `arabic_norm.py`    | Dialect normalization, diacritics & search cleanup       |
+| `rag.py`            | Voice RAG over recorded notes                            |
+| `static/index.html` | Dashboard UI with tasks, history & RAG cards             |
+| `static/app.js`     | Mic capture, upload, task checklist, tabs                |
 
 ## Setup
 
@@ -50,10 +52,15 @@ cp .env.example .env
 #   then edit .env and fill in your keys
 ```
 
-Required keys in `.env`:
+Keys in `.env` — you only need the ones for the backends you pick:
 
-- `OPENAI_API_KEY` — used for **both** transcription and the understanding layer (the only key you need)
+- `GEMINI_API_KEY` — for `UNDERSTAND_BACKEND=gemini` (the `.env.example` default; free key at <https://aistudio.google.com/apikey>)
+- `OPENAI_API_KEY` — for `TRANSCRIBE_BACKEND=openai` and/or `UNDERSTAND_BACKEND=openai`
 - `NOTION_API_KEY`, `NOTION_DATABASE_ID` — **optional**; if set, `task` items are also pushed to Notion
+
+With `TRANSCRIBE_BACKEND=local` and `UNDERSTAND_BACKEND=local` no keys are needed at all.
+
+If a backend variable is not set at all, the code falls back to `openai` for both stages.
 
 ## Run
 
@@ -65,12 +72,28 @@ Open <http://localhost:8000>.
 
 Check integration status any time at <http://localhost:8000/api/health>.
 
+## Deploying
+
+Set these in your hosting platform's environment (they take precedence over any `.env` file):
+
+- `APP_PASSWORD` (and optionally `APP_USERNAME`, default `admin`) — turns on HTTP Basic auth for the UI and API. **Without it the app is open to anyone.**
+- `DB_PATH` — put the SQLite file on a persistent volume, e.g. `/var/data/insights.db`.
+- `RATE_LIMIT_PER_MINUTE` — per-IP limit on the transcribe / understand / RAG endpoints (default 20).
+
+Run without `--reload`, and pass proxy headers through if you sit behind a load balancer:
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'
+```
+
+`/healthz` is an unauthenticated liveness probe for the platform's health checks.
+
 ## Demo tips (live path)
 
-- **Start green without a mic:** you only need `OPENAI_API_KEY`. Paste text into the fallback box (or click a **Sample** button) and hit **Run text → understand**. The whole classify → extract → act chain runs without touching the mic or transcription at all.
-- Then wire the mic: click **Record**, speak, click **Stop**. The recorded audio is sent **as-is** to OpenAI's transcription API — no `ffmpeg` and no in-browser conversion.
+- **Start green without a mic:** you only need the key for your understanding backend. Paste text into the fallback box (or click a **Sample** button) and hit **Run text → understand**. The whole classify → extract → act chain runs without touching the mic or transcription at all.
+- Then wire the mic: click **Record**, speak, click **Stop** (or **Upload Audio**, max `MAX_UPLOAD_MB`, default 25 MB). The recorded audio is sent **as-is** to the transcription backend — no in-browser conversion.
 - Every pipeline stage renders as it completes (transcript → classification → action) so the audience watches the chain, not just the final result.
-- **Errors are loud:** any OpenAI/Notion failure shows in a red banner at the top of the page with the actual message, so you can debug on stage without guessing.
+- **Errors are loud (when you want them to be):** failures show in a red banner at the top of the page. Set `EXPOSE_ERROR_DETAILS=true` locally to see the real provider message there; leave it off in production, where clients get a generic message and the details go to the server log.
 
 ### Transcription backend: cloud vs. local Whisper
 
@@ -93,14 +116,15 @@ On quality: `small` is fine for English, **`medium` is the realistic floor for L
 
 ### Understanding backend: cloud vs. local SLM
 
-The understanding layer has two interchangeable brains behind the **same strict-JSON contract**, selected by `UNDERSTAND_BACKEND`:
+The understanding layer has three interchangeable brains behind the **same strict-JSON contract**, selected by `UNDERSTAND_BACKEND`:
 
 | `UNDERSTAND_BACKEND` | Brain                                  | Needs                          |
 |----------------------|----------------------------------------|--------------------------------|
+| `gemini`             | Gemini Flash-Lite (`GEMINI_MODEL`)     | `GEMINI_API_KEY`               |
 | `openai` (default)   | `gpt-4o` via OpenAI API                | `OPENAI_API_KEY`               |
 | `local`              | Qwen2.5-1.5B-Instruct via **llama.cpp**| a running `llama-server`       |
 
-Because llama.cpp constrains generation to the JSON schema (via grammar), even a 1.5B model **cannot** emit invalid JSON — it's forced into shape token by token. The tradeoff is *semantic* quality: a 1.5B model is solid on English intents and lighter on nuanced or Lebanese-dialect Arabic. Keep `openai` as your live fallback — flip one env var if the local model wobbles on stage.
+Because llama.cpp constrains generation to the JSON schema (via grammar), even a 1.5B model **cannot** emit invalid JSON — it's forced into shape token by token. The tradeoff is *semantic* quality: a 1.5B model is solid on English intents and lighter on nuanced or Lebanese-dialect Arabic. Keep `gemini` or `openai` as your live fallback — flip one env var if the local model wobbles on stage.
 
 > Set `TRANSCRIBE_BACKEND=local` **and** `UNDERSTAND_BACKEND=local` for a fully offline pipeline — no network calls at all.
 
@@ -125,8 +149,8 @@ Confirm which brain is live at <http://localhost:8000/api/health> (`understand_b
 
 ### Language detection
 
-Transcription uses `gpt-4o-transcribe`, which auto-detects language and handles code-switched Arabic/English in one pass. The locale badge (`ar` / `en` / `mixed`) is derived from the script present in the transcript. Prefer an explicit language field? Switch `MODEL` in `stt.py` to `whisper-1` and request `verbose_json`.
+With `TRANSCRIBE_BACKEND=openai`, `gpt-4o-transcribe` auto-detects language and handles code-switched Arabic/English in one pass; the locale badge (e.g. `Arabic`, `Mixed (Arabic + English)`) is derived from the scripts present in the transcript. Prefer an explicit language field? Switch `OPENAI_STT_MODEL` in `stt.py` to `whisper-1` and request `verbose_json`. Local Whisper reports its detected language and confidence directly.
 
 ### Notion (optional)
 
-The push in `actions.py` assumes your Notion database has a title property named **`Name`**. Adjust the `properties` payload there if yours differs.
+The push in `actions.py` assumes your Notion database has a title property named **`Name`** and, optionally, a select property named **`Priority`** (Low / Medium / High). If the `Priority` column is missing it retries with just the title. Adjust the `properties` payload there if your schema differs.

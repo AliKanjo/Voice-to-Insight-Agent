@@ -52,7 +52,11 @@ _LANG_NAMES = {
 
 
 class STTError(RuntimeError):
-    """Raised when transcription fails, so main.py can surface it loudly."""
+    """Raised when transcription fails (backend / configuration problem)."""
+
+
+class NoSpeechError(STTError):
+    """The audio was processed but contained no recognizable speech (the caller's problem)."""
 
 
 def active_backend() -> str:
@@ -118,7 +122,8 @@ def _get_local_model():
         from faster_whisper import WhisperModel
     except ImportError as exc:
         raise STTError(
-            "faster-whisper is not installed. Run: pip install faster-whisper"
+            f"Could not import faster-whisper ({exc}). "
+            "Install the pinned dependencies with: pip install -r requirements.txt"
         ) from exc
 
     try:
@@ -151,5 +156,5 @@ def transcribe(audio_path: str) -> dict:
     result = _transcribe_local(audio_path) if backend == "local" else _transcribe_openai(audio_path)
 
     if not result["transcript"]:
-        raise STTError("Transcription returned empty text — was there any speech?")
+        raise NoSpeechError("Transcription returned empty text — was there any speech?")
     return result

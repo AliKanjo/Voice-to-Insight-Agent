@@ -129,67 +129,73 @@ def _resolve_client() -> tuple[OpenAI, str]:
     return OpenAI(api_key=key), "gpt-4o"
 
 
+def _is_transient(err: Exception) -> bool:
+    msg = str(err)
+    return any(k in msg for k in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE"))
+
+
+def _fail(error: str, error_type: str = "upstream", **extra) -> dict:
+    """Error result. error_type is "bad_input" (caller's fault, safe to show)
+    or "upstream" (backend/model failure; details are logged, not shown, by main.py)."""
+    return {"intent": "error", "error": error, "error_type": error_type, **extra}
+
+
 def understand(transcript: str) -> dict:
-    """Return {"intent": ..., "data": {...}} or {"intent": "error", "error": ...}."""
+    """Return {"intent": ..., "data": {...}} or {"intent": "error", "error": ..., "error_type": ...}."""
     text = (transcript or "").strip()
     if not text:
-        return {"intent": "error", "error": "Empty transcript — nothing to understand."}
+        return _fail("Empty transcript — nothing to understand.", "bad_input")
 
     # Pre-clean transcript (strips diacritics, eastern numerals, tatweel)
     cleaned_text = arabic_norm.clean_transcript(text)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": cleaned_text},
+    ]
 
     try:
         client, model = _resolve_client()
-        try:
-            resp = client.chat.completions.create(
-                model=model,
+
+        def _call(model_name: str):
+            return client.chat.completions.create(
+                model=model_name,
                 temperature=0.2,
                 response_format=RESPONSE_FORMAT,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": cleaned_text},
-                ],
+                messages=messages,
             )
+
+        try:
+            resp = _call(model)
         except Exception as api_err:
-            err_msg = str(api_err)
-            if active_backend() == "gemini" and any(k in err_msg for k in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE")):
-                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-                    time.sleep(5)
-                fallback_model = "gemini-3.5-flash-lite" if model != "gemini-3.5-flash-lite" else "gemini-3.8-flash"
-                resp = client.chat.completions.create(
-                    model=fallback_model,
-                    temperature=0.2,
-                    response_format=RESPONSE_FORMAT,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": cleaned_text},
-                    ],
-                )
-            else:
-                raise api_err
+            # Gemini's free tier rate-limits / overloads often: back off once, then retry
+            # on GEMINI_FALLBACK_MODEL if set, otherwise on the same model.
+            if active_backend() != "gemini" or not _is_transient(api_err):
+                raise
+            time.sleep(5)
+            resp = _call(os.getenv("GEMINI_FALLBACK_MODEL", "").strip() or model)
     except Exception as exc:
         hint = ""
         if active_backend() == "local":
             hint = " (is the local LLM server running at LOCAL_LLM_BASE_URL?)"
-        return {"intent": "error", "error": f"[{active_backend()}] request failed: {exc}{hint}"}
+        return _fail(f"[{active_backend()}] request failed: {exc}{hint}")
 
     choice = resp.choices[0]
     refusal = getattr(choice.message, "refusal", None)
     if refusal:
-        return {"intent": "error", "error": f"Model refused: {refusal}"}
+        return _fail(f"Model refused: {refusal}")
 
     raw = choice.message.content or ""
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
-        return {"intent": "error", "error": f"Could not parse model JSON: {exc}", "raw": raw}
+        return _fail(f"Could not parse model JSON: {exc}", raw=raw)
 
-    result = parsed.get("result")
+    result = parsed.get("result") if isinstance(parsed, dict) else None
     if not isinstance(result, dict):
-        return {"intent": "error", "error": "Model returned an unexpected shape.", "raw": parsed}
+        return _fail("Model returned an unexpected shape.", raw=parsed)
 
     intent = result.get("kind")
     if intent not in ("task", "content", "summary", "query"):
-        return {"intent": "error", "error": f"Unknown kind: {intent!r}", "raw": parsed}
+        return _fail(f"Unknown kind: {intent!r}", raw=parsed)
 
     return {"intent": intent, "data": result}

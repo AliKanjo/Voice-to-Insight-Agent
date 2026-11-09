@@ -47,7 +47,6 @@ let currentFilter = "all";
 let cachedTasks = [];
 let cachedHistory = [];
 let toastTimeout = null;
-let lastDeletedTask = null;
 
 // Multilingual Samples
 const SAMPLES = [
@@ -129,7 +128,7 @@ async function checkHealth() {
 function renderPipeline(state) {
   const s = (cls, label, bodyHtml, copyVal = null) => {
     const copyBtn = copyVal
-      ? `<button class="copy-btn" onclick="copyText(${escapeAttr(JSON.stringify(copyVal))})">📋 Copy</button>`
+      ? `<button class="copy-btn" data-copy="${escapeHtml(copyVal)}">📋 Copy</button>`
       : "";
     return `
       <div class="stage ${cls}">
@@ -153,7 +152,7 @@ function renderPipeline(state) {
       const rtlCls = isArabic(text) ? "rtl-text" : "";
       html += s(
         "done",
-        `① Speech-to-Text <span class="locale">(${state.transcript.locale || "detected"})</span>`,
+        `① Speech-to-Text <span class="locale">(${escapeHtml(state.transcript.locale || "detected")})</span>`,
         `<div class="${rtlCls}">${escapeHtml(text)}</div>`,
         text
       );
@@ -170,7 +169,7 @@ function renderPipeline(state) {
       html += s(
         "done",
         "② Understanding & Extraction",
-        `<span class="badge ${intent}">${intent}</span>` +
+        `<span class="badge ${escapeHtml(intent)}">${escapeHtml(intent)}</span>` +
         `<pre>${escapeHtml(JSON.stringify(state.classify.data, null, 2))}</pre>`,
         JSON.stringify(state.classify.data, null, 2)
       );
@@ -215,7 +214,7 @@ function renderAction(action) {
       <div>
         📝 Caption for <strong>${escapeHtml(action.platform || "Social")}</strong> (${escapeHtml(action.tone || "General")}):
         <div class="rag-box ${rtlCls}">${escapeHtml(action.caption)}</div>
-        <button class="btn-secondary copy-btn" style="margin-top:8px;" onclick="copyText(${escapeAttr(JSON.stringify(action.caption))})">📋 Copy Caption</button>
+        <button class="btn-secondary copy-btn" style="margin-top:8px;" data-copy="${escapeHtml(action.caption)}">📋 Copy Caption</button>
       </div>`;
   }
 
@@ -242,7 +241,7 @@ function renderAction(action) {
       <div class="rag-box">
         <div class="rag-answer ${rtlCls}">💬 ${escapeHtml(action.answer)}</div>
         ${citationsHtml}
-        <button class="btn-secondary copy-btn" style="margin-top:8px;" onclick="copyText(${escapeAttr(JSON.stringify(action.answer))})">📋 Copy Answer</button>
+        <button class="btn-secondary copy-btn" style="margin-top:8px;" data-copy="${escapeHtml(action.answer)}">📋 Copy Answer</button>
       </div>`;
   }
 
@@ -254,9 +253,13 @@ function escapeHtml(str) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-function escapeAttr(str) {
-  return String(str || "").replace(/"/g, '&quot;');
-}
+// Copy buttons carry their text in an HTML-escaped data-copy attribute and are
+// handled by one delegated listener. Never interpolate model output into inline
+// onclick handlers: HTML entities in the text are decoded before the JS runs.
+document.addEventListener("click", (ev) => {
+  const btn = ev.target.closest("[data-copy]");
+  if (btn) copyText(btn.dataset.copy);
+});
 
 // ---------- Pipeline Driver ----------
 async function runUnderstand(transcript, state, locale = "") {
@@ -271,6 +274,10 @@ async function runUnderstand(transcript, state, locale = "") {
       body: JSON.stringify({ transcript, locale }),
     });
     res = await r.json();
+    // Non-2xx (e.g. 429 rate limit) may come without intent: "error"; treat it as one.
+    if (!r.ok && res.intent !== "error") {
+      res = { intent: "error", error: res.error || `HTTP ${r.status}` };
+    }
   } catch (e) {
     state.classify = { status: "error", error: "Network error: " + e.message };
     renderPipeline(state);
@@ -418,6 +425,7 @@ async function processAudioBlob(blob, mime) {
   try {
     const r = await fetch("/api/transcribe", { method: "POST", body: form });
     res = await r.json();
+    if (!r.ok && !res.error) res.error = `HTTP ${r.status}`;
   } catch (e) {
     showError("Network error calling /api/transcribe: " + e.message);
     els.recStatus.textContent = "Idle";
@@ -522,7 +530,8 @@ window.toggleTask = async function(id) {
     renderTaskList();
   }
   try {
-    await fetch(`/api/tasks/${id}/toggle`, { method: "POST" });
+    const r = await fetch(`/api/tasks/${id}/toggle`, { method: "POST" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     loadTasks();
   } catch (e) {
     showError("Failed to update task: " + e.message);
@@ -533,22 +542,24 @@ window.toggleTask = async function(id) {
 window.deleteTask = async function(id) {
   const taskIndex = cachedTasks.findIndex((t) => t.id === id);
   if (taskIndex !== -1) {
-    lastDeletedTask = cachedTasks[taskIndex];
     cachedTasks.splice(taskIndex, 1);
     renderTaskList();
   }
 
   try {
-    await fetch(`/api/tasks/${id}`, { method: "DELETE" });
-    showToast("Task deleted", () => {
-      // Undo callback: re-post task
-      if (lastDeletedTask) {
-        fetch("/api/understand", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript: lastDeletedTask.title }),
-        }).then(() => loadTasks());
+    const r = await fetch(`/api/tasks/${id}`, { method: "DELETE" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    loadHistory();
+    showToast("Task deleted", async () => {
+      // Undo: the server soft-deletes, so restore the exact same task (no LLM call).
+      try {
+        const rr = await fetch(`/api/tasks/${id}/restore`, { method: "POST" });
+        if (!rr.ok) throw new Error((await rr.json()).error || `HTTP ${rr.status}`);
+      } catch (e) {
+        showError("Could not undo delete: " + e.message);
       }
+      loadTasks();
+      loadHistory();
     });
   } catch (e) {
     showError("Failed to delete task: " + e.message);
@@ -564,7 +575,9 @@ els.clearCompletedBtn.addEventListener("click", async () => {
     return;
   }
   try {
-    await fetch("/api/tasks/clear-completed", { method: "POST" });
+    const r = await fetch("/api/tasks/clear-completed", { method: "POST" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    loadHistory();
     showToast(`Cleared ${completedCount} completed task(s).`);
     loadTasks();
   } catch (e) {
