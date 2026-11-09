@@ -6,7 +6,7 @@ Retrieves relevant notes via SQLite FTS5 + normalized matching, then synthesizes
 """
 
 import json
-from typing import Any
+from typing import Any, Optional
 
 import arabic_norm
 import errors
@@ -23,16 +23,22 @@ Rules:
 """
 
 
-def answer_query(question: str, client: Any = None, model: str = None) -> dict:
+def answer_query(
+    question: str,
+    client: Any = None,
+    model: str = None,
+    user_id: Optional[int] = None,
+) -> dict:
     """
     Perform retrieval over past voice notes and generate a grounded answer.
+    Scoped to the current authenticated user's records.
     """
     clean_q = arabic_norm.clean_transcript(question)
-    matching_notes = db.search_notes(clean_q, limit=6)
+    matching_notes = db.search_notes(clean_q, limit=6, user_id=user_id)
 
     # If few or no direct matches, also include recent tasks and notes as context
     if len(matching_notes) < 3:
-        recent = db.get_history(limit=5)
+        recent = db.get_history(limit=5, user_id=user_id)
         seen_ids = {n["id"] for n in matching_notes}
         for r in recent:
             if r["id"] not in seen_ids:

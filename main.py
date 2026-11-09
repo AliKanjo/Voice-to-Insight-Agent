@@ -16,7 +16,7 @@ import tempfile
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query, UploadFile
+from fastapi import Depends, FastAPI, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -79,6 +79,17 @@ async def reject_oversized_uploads(request, call_next):
 
 
 # --- Models ---------------------------------------------------------------
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    display_name: Optional[str] = None
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
 class UnderstandRequest(BaseModel):
     transcript: str
     locale: Optional[str] = None
@@ -112,9 +123,50 @@ def health() -> dict:
     }
 
 
+# --- Multi-User Auth ------------------------------------------------------
+@app.post("/api/auth/register")
+def register(req: RegisterRequest) -> JSONResponse:
+    """Register a new user account and return a session token."""
+    try:
+        user = db.create_user(req.email, req.password, req.display_name)
+        token = db.create_session(user["id"])
+        return JSONResponse({"ok": True, "user": user, "token": token})
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": "Registration failed."}, status_code=500)
+
+
+@app.post("/api/auth/login")
+def login(req: LoginRequest) -> JSONResponse:
+    """Authenticate with email and password, returning a session token."""
+    user = db.authenticate_user(req.email, req.password)
+    if not user:
+        return JSONResponse({"error": "Invalid email or password."}, status_code=401)
+    token = db.create_session(user["id"])
+    return JSONResponse({"ok": True, "user": user, "token": token})
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request) -> JSONResponse:
+    """Revoke the current session token."""
+    token = security.extract_session_token(request)
+    if token:
+        db.delete_session(token)
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/auth/me")
+def get_me(current_user: dict = Depends(security.get_current_user)) -> JSONResponse:
+    """Get the currently logged-in user profile."""
+    return JSONResponse({"ok": True, "user": current_user})
+
+
 # --- Stage 2: speech-to-text ---------------------------------------------
 @app.post("/api/transcribe")
-async def transcribe(audio: UploadFile) -> JSONResponse:
+async def transcribe(
+    audio: UploadFile, current_user: dict = Depends(security.get_current_user)
+) -> JSONResponse:
     """Accept an audio file (WAV from the browser), return transcript + locale."""
     ext = os.path.splitext(audio.filename or "")[1].lower()
     ctype = (audio.content_type or "").split(";")[0].strip().lower()
@@ -163,7 +215,9 @@ async def transcribe(audio: UploadFile) -> JSONResponse:
 
 # --- Stage 3 + 4: understand, then act -----------------------------------
 @app.post("/api/understand")
-def understand_endpoint(req: UnderstandRequest) -> JSONResponse:
+def understand_endpoint(
+    req: UnderstandRequest, current_user: dict = Depends(security.get_current_user)
+) -> JSONResponse:
     """Classify + extract, then dispatch the matching action into SQLite / Notion / RAG."""
     result = understand.understand(req.transcript)
 
@@ -189,6 +243,7 @@ def understand_endpoint(req: UnderstandRequest) -> JSONResponse:
         data=result["data"],
         transcript=req.transcript,
         locale=req.locale or "",
+        user_id=current_user.get("id"),
     )
 
     return JSONResponse(
@@ -202,57 +257,73 @@ def understand_endpoint(req: UnderstandRequest) -> JSONResponse:
 
 # --- Database & Task Management ------------------------------------------
 @app.get("/api/tasks")
-def get_tasks(status: Optional[str] = None) -> dict:
-    """Read tasks from SQLite, newest first."""
-    return {"tasks": db.get_tasks(status=status)}
+def get_tasks(
+    status: Optional[str] = None,
+    current_user: dict = Depends(security.get_current_user),
+) -> dict:
+    """Read tasks from SQLite, scoped to the authenticated user."""
+    return {"tasks": db.get_tasks(status=status, user_id=current_user.get("id"))}
 
 
 @app.post("/api/tasks/{task_id}/toggle")
-def toggle_task(task_id: int) -> JSONResponse:
+def toggle_task(
+    task_id: int, current_user: dict = Depends(security.get_current_user)
+) -> JSONResponse:
     """Toggle task status between 'pending' and 'completed'."""
-    updated = db.toggle_task(task_id)
+    updated = db.toggle_task(task_id, user_id=current_user.get("id"))
     if not updated:
         return JSONResponse({"error": "Task not found"}, status_code=404)
     return JSONResponse({"ok": True, "task": updated})
 
 
 @app.delete("/api/tasks/{task_id}")
-def delete_task(task_id: int) -> JSONResponse:
+def delete_task(
+    task_id: int, current_user: dict = Depends(security.get_current_user)
+) -> JSONResponse:
     """Delete a task by ID."""
-    if not db.delete_task(task_id):
+    if not db.delete_task(task_id, user_id=current_user.get("id")):
         return JSONResponse({"error": "Task not found"}, status_code=404)
     return JSONResponse({"ok": True})
 
 
 @app.post("/api/tasks/{task_id}/restore")
-def restore_task(task_id: int) -> JSONResponse:
+def restore_task(
+    task_id: int, current_user: dict = Depends(security.get_current_user)
+) -> JSONResponse:
     """Undo a delete (available for a few minutes after deleting)."""
-    task = db.restore_task(task_id)
+    task = db.restore_task(task_id, user_id=current_user.get("id"))
     if not task:
         return JSONResponse({"error": "Nothing to restore — the undo window has expired."}, status_code=404)
     return JSONResponse({"ok": True, "task": task})
 
 
 @app.post("/api/tasks/clear-completed")
-def clear_completed() -> JSONResponse:
-    """Clear all completed tasks from SQLite."""
-    count = db.clear_completed_tasks()
+def clear_completed(
+    current_user: dict = Depends(security.get_current_user),
+) -> JSONResponse:
+    """Clear all completed tasks from SQLite for the authenticated user."""
+    count = db.clear_completed_tasks(user_id=current_user.get("id"))
     return JSONResponse({"ok": True, "cleared_count": count})
 
 
 # --- History & RAG Knowledge Retrieval -----------------------------------
 @app.get("/api/history")
-def get_history(limit: int = Query(50, ge=1, le=200)) -> dict:
-    """Return historical voice notes and insights stored in SQLite."""
-    return {"history": db.get_history(limit=limit)}
+def get_history(
+    limit: int = Query(50, ge=1, le=200),
+    current_user: dict = Depends(security.get_current_user),
+) -> dict:
+    """Return historical voice notes and insights stored in SQLite for the authenticated user."""
+    return {"history": db.get_history(limit=limit, user_id=current_user.get("id"))}
 
 
 @app.post("/api/rag/ask")
-def rag_ask(req: RagRequest) -> JSONResponse:
-    """Search past voice notes and synthesize a grounded answer."""
+def rag_ask(
+    req: RagRequest, current_user: dict = Depends(security.get_current_user)
+) -> JSONResponse:
+    """Search past voice notes and synthesize a grounded answer for the authenticated user."""
     if not req.question.strip():
         return JSONResponse({"error": "Empty question."}, status_code=400)
-    res = rag.answer_query(req.question)
+    res = rag.answer_query(req.question, user_id=current_user.get("id"))
     return JSONResponse(res, status_code=200 if res.get("ok") else 502)
 
 

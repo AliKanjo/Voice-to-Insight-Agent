@@ -250,6 +250,58 @@
     @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
     #toastUndoBtn { background: transparent; color: var(--accent); border: none; padding: 0; font-size: 13px; font-weight: 700; cursor: pointer; }
     #toastUndoBtn:hover { text-decoration: underline; }
+
+    /* Auth Modal */
+    .modal-overlay {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(4px);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 2000; padding: 20px;
+    }
+    .modal-card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 14px; width: 100%; max-width: 420px;
+      padding: 24px; box-shadow: 0 16px 36px rgba(0, 0, 0, 0.5);
+      position: relative;
+    }
+    .modal-close {
+      position: absolute; top: 16px; right: 16px;
+      background: transparent; border: none; font-size: 20px;
+      color: var(--muted); cursor: pointer; padding: 4px 8px;
+    }
+    .modal-close:hover { color: var(--text); }
+    .auth-tabs {
+      display: flex; gap: 8px; border-bottom: 1px solid var(--border);
+      margin-bottom: 20px; padding-bottom: 8px;
+    }
+    .auth-tab-btn {
+      background: transparent; border: none; color: var(--muted);
+      font-size: 14px; font-weight: 600; cursor: pointer; padding: 6px 12px;
+      border-radius: 6px;
+    }
+    .auth-tab-btn.active {
+      color: var(--text); background: var(--panel-2);
+    }
+    .auth-field { margin-bottom: 14px; }
+    .auth-field label {
+      display: block; font-size: 12px; font-weight: 600; color: var(--muted);
+      margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .auth-field input {
+      width: 100%; padding: 10px 12px; background: var(--panel-2);
+      border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+      font-size: 14px;
+    }
+    .auth-field input:focus { outline: none; border-color: var(--accent); }
+    .auth-btn { width: 100%; padding: 12px; margin-top: 10px; font-size: 14px; }
+    .auth-error {
+      display: none; background: #3c1418; border: 1px solid var(--red);
+      color: #ffb4af; padding: 10px 14px; border-radius: 8px; font-size: 12px;
+      margin-bottom: 14px;
+    }
+    .auth-footer {
+      margin-top: 16px; text-align: center; font-size: 12px; color: var(--muted);
+    }
   </style>
 </head>
 <body>
@@ -258,11 +310,21 @@
       <h1>🎙️ Voice-to-Insight Agent</h1>
       <p>Speak or upload voice notes in any language → Real-time Transcribe → Normalize → Act & Voice RAG.</p>
     </div>
-    <div class="status-chips">
-      <span class="chip active" id="sttChip">STT: Whisper</span>
-      <span class="chip active" id="llmChip">LLM: Gemini</span>
-      <span class="chip active" id="dbChip">DB: SQLite</span>
-      <span class="chip" id="notionChip">Notion</span>
+    <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+      <div class="status-chips">
+        <span class="chip active" id="sttChip">STT: Whisper</span>
+        <span class="chip active" id="llmChip">LLM: Gemini</span>
+        <span class="chip active" id="dbChip">DB: SQLite</span>
+        <span class="chip" id="notionChip">Notion</span>
+      </div>
+
+      <div id="userWidget" style="display: none; align-items: center; gap: 8px;">
+        <span id="userBadge" style="background: var(--panel-2); border: 1px solid var(--border); padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--accent);">
+          👤 <span id="userName">User</span>
+        </span>
+        <button class="btn-secondary" id="logoutBtn" style="padding: 4px 10px; font-size: 12px;">Sign Out</button>
+      </div>
+      <button class="btn-secondary" id="openAuthModalBtn" style="padding: 6px 12px; font-size: 12px;">🔐 Sign In / Sign Up</button>
     </div>
   </header>
 
@@ -356,6 +418,53 @@
   <div id="toast">
     <span id="toastMsg">Notification</span>
     <button id="toastUndoBtn">Undo</button>
+  </div>
+
+  <!-- Auth Modal -->
+  <div id="authModal" class="modal-overlay" style="display: none;">
+    <div class="modal-card">
+      <button class="modal-close" id="closeAuthModalBtn">✕</button>
+      <div class="auth-tabs">
+        <button class="auth-tab-btn active" id="tabSignIn">Sign In</button>
+        <button class="auth-tab-btn" id="tabSignUp">Create Account</button>
+      </div>
+
+      <div id="authError" class="auth-error"></div>
+
+      <!-- Sign In Form -->
+      <form id="signInForm">
+        <div class="auth-field">
+          <label for="loginEmail">Email Address</label>
+          <input type="email" id="loginEmail" placeholder="you@example.com" required autocomplete="email" />
+        </div>
+        <div class="auth-field">
+          <label for="loginPassword">Password</label>
+          <input type="password" id="loginPassword" placeholder="••••••••" required autocomplete="current-password" />
+        </div>
+        <button type="submit" class="auth-btn" id="signInSubmitBtn">Sign In</button>
+      </form>
+
+      <!-- Sign Up Form -->
+      <form id="signUpForm" style="display: none;">
+        <div class="auth-field">
+          <label for="regName">Full Name</label>
+          <input type="text" id="regName" placeholder="e.g. Ali Kanjo" autocomplete="name" />
+        </div>
+        <div class="auth-field">
+          <label for="regEmail">Email Address</label>
+          <input type="email" id="regEmail" placeholder="you@example.com" required autocomplete="email" />
+        </div>
+        <div class="auth-field">
+          <label for="regPassword">Password (6+ characters)</label>
+          <input type="password" id="regPassword" placeholder="••••••••" required minlength="6" autocomplete="new-password" />
+        </div>
+        <button type="submit" class="auth-btn" id="signUpSubmitBtn">Create Free Account</button>
+      </form>
+
+      <div class="auth-footer">
+        🔒 Every user gets isolated notes, private tasks, and custom Voice RAG.
+      </div>
+    </div>
   </div>
 
   <script src="/static/app.js"></script>

@@ -1,6 +1,7 @@
 // Voice-to-Insight Agent — Enhanced Frontend Logic
 // Supports live recording, file upload, audio playback player,
-// task filtering, batch clear, undoable delete, and Voice RAG.
+// task filtering, batch clear, undoable delete, Voice RAG,
+// and multi-user registration, login, and data isolation.
 
 const els = {
   recordBtn: document.getElementById("recordBtn"),
@@ -40,6 +41,27 @@ const els = {
   toast: document.getElementById("toast"),
   toastMsg: document.getElementById("toastMsg"),
   toastUndoBtn: document.getElementById("toastUndoBtn"),
+
+  // Auth Elements
+  userWidget: document.getElementById("userWidget"),
+  userBadge: document.getElementById("userBadge"),
+  userName: document.getElementById("userName"),
+  logoutBtn: document.getElementById("logoutBtn"),
+  openAuthModalBtn: document.getElementById("openAuthModalBtn"),
+  authModal: document.getElementById("authModal"),
+  closeAuthModalBtn: document.getElementById("closeAuthModalBtn"),
+  tabSignIn: document.getElementById("tabSignIn"),
+  tabSignUp: document.getElementById("tabSignUp"),
+  authError: document.getElementById("authError"),
+  signInForm: document.getElementById("signInForm"),
+  signUpForm: document.getElementById("signUpForm"),
+  loginEmail: document.getElementById("loginEmail"),
+  loginPassword: document.getElementById("loginPassword"),
+  signInSubmitBtn: document.getElementById("signInSubmitBtn"),
+  regName: document.getElementById("regName"),
+  regEmail: document.getElementById("regEmail"),
+  regPassword: document.getElementById("regPassword"),
+  signUpSubmitBtn: document.getElementById("signUpSubmitBtn"),
 };
 
 // Global State
@@ -47,6 +69,10 @@ let currentFilter = "all";
 let cachedTasks = [];
 let cachedHistory = [];
 let toastTimeout = null;
+
+// Auth State
+let authToken = localStorage.getItem("voice_agent_token") || "";
+let currentUser = null;
 
 // Multilingual Samples
 const SAMPLES = [
@@ -71,6 +97,116 @@ window.copyText = function(text) {
     console.error("Copy failed", err);
   });
 };
+
+// ---------- Auth Helpers & Network Interceptor ----------
+function getAuthHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (authToken) {
+    headers["Authorization"] = `Bearer ${authToken}`;
+  }
+  return headers;
+}
+
+async function fetchWithAuth(url, options = {}) {
+  options.headers = getAuthHeaders(options.headers || {});
+  const res = await fetch(url, options);
+  if (res.status === 401 && !url.includes("/api/auth/")) {
+    onLoggedOut();
+    openAuthModal("Authentication required. Please sign in to access your notes.");
+  }
+  return res;
+}
+
+function openAuthModal(errorMsg = "") {
+  if (els.authModal) {
+    els.authModal.style.display = "flex";
+    if (errorMsg) showAuthError(errorMsg);
+    else clearAuthError();
+  }
+}
+
+function closeAuthModal() {
+  if (els.authModal) {
+    els.authModal.style.display = "none";
+    clearAuthError();
+  }
+}
+
+function showAuthError(msg) {
+  if (els.authError) {
+    els.authError.textContent = msg;
+    els.authError.style.display = "block";
+  }
+}
+
+function clearAuthError() {
+  if (els.authError) {
+    els.authError.textContent = "";
+    els.authError.style.display = "none";
+  }
+}
+
+function switchAuthTab(tab) {
+  clearAuthError();
+  if (tab === "signin") {
+    els.tabSignIn.classList.add("active");
+    els.tabSignUp.classList.remove("active");
+    els.signInForm.style.display = "block";
+    els.signUpForm.style.display = "none";
+  } else {
+    els.tabSignUp.classList.add("active");
+    els.tabSignIn.classList.remove("active");
+    els.signInForm.style.display = "none";
+    els.signUpForm.style.display = "block";
+  }
+}
+
+function onLoggedIn(user, token) {
+  currentUser = user;
+  authToken = token;
+  localStorage.setItem("voice_agent_token", token);
+  if (els.userName) els.userName.textContent = user.display_name || user.email;
+  if (els.userWidget) els.userWidget.style.display = "flex";
+  if (els.openAuthModalBtn) els.openAuthModalBtn.style.display = "none";
+  closeAuthModal();
+  showToast(`Welcome, ${user.display_name || user.email}!`);
+  loadTasks();
+  loadHistory();
+}
+
+function onLoggedOut() {
+  currentUser = null;
+  authToken = "";
+  localStorage.removeItem("voice_agent_token");
+  if (els.userWidget) els.userWidget.style.display = "none";
+  if (els.openAuthModalBtn) els.openAuthModalBtn.style.display = "inline-flex";
+  cachedTasks = [];
+  cachedHistory = [];
+  renderTaskList();
+  renderHistoryList();
+}
+
+async function checkAuth() {
+  if (!authToken) {
+    onLoggedOut();
+    return;
+  }
+  try {
+    const res = await fetch("/api/auth/me", { headers: getAuthHeaders() });
+    if (res.ok) {
+      const data = await res.json();
+      currentUser = data.user;
+      if (els.userName) els.userName.textContent = currentUser.display_name || currentUser.email;
+      if (els.userWidget) els.userWidget.style.display = "flex";
+      if (els.openAuthModalBtn) els.openAuthModalBtn.style.display = "none";
+    } else {
+      onLoggedOut();
+    }
+  } catch (e) {
+    console.error("Auth check failed:", e);
+    onLoggedOut();
+  }
+}
 
 // ---------- Toast Notifications ----------
 function showToast(msg, undoFn = null) {
@@ -268,13 +404,12 @@ async function runUnderstand(transcript, state, locale = "") {
 
   let res;
   try {
-    const r = await fetch("/api/understand", {
+    const r = await fetchWithAuth("/api/understand", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ transcript, locale }),
     });
     res = await r.json();
-    // Non-2xx (e.g. 429 rate limit) may come without intent: "error"; treat it as one.
     if (!r.ok && res.intent !== "error") {
       res = { intent: "error", error: res.error || `HTTP ${r.status}` };
     }
@@ -396,10 +531,7 @@ async function onRecordingStopped(stream) {
   const mime = mediaRecorder.mimeType || "audio/webm";
   const blob = new Blob(chunks, { type: mime });
 
-  // Attach audio to playback player
   attachAudioPlayback(blob);
-
-  // Send for transcription
   await processAudioBlob(blob, mime);
 }
 
@@ -423,7 +555,7 @@ async function processAudioBlob(blob, mime) {
 
   let res;
   try {
-    const r = await fetch("/api/transcribe", { method: "POST", body: form });
+    const r = await fetchWithAuth("/api/transcribe", { method: "POST", body: form });
     res = await r.json();
     if (!r.ok && !res.error) res.error = `HTTP ${r.status}`;
   } catch (e) {
@@ -461,7 +593,7 @@ els.audioFileInput.addEventListener("change", async (e) => {
 // ---------- Task List & Management ----------
 async function loadTasks() {
   try {
-    const r = await fetch("/api/tasks");
+    const r = await fetchWithAuth("/api/tasks");
     const { tasks } = await r.json();
     cachedTasks = tasks || [];
     renderTaskList();
@@ -470,7 +602,6 @@ async function loadTasks() {
   }
 }
 
-// Local calendar date as YYYY-MM-DD (comparable with the server's due_date_iso strings).
 function todayIso() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -536,14 +667,13 @@ function renderTaskList() {
 }
 
 window.toggleTask = async function(id) {
-  // Optimistic UI update
   const task = cachedTasks.find((t) => t.id === id);
   if (task) {
     task.status = task.status === "pending" ? "completed" : "pending";
     renderTaskList();
   }
   try {
-    const r = await fetch(`/api/tasks/${id}/toggle`, { method: "POST" });
+    const r = await fetchWithAuth(`/api/tasks/${id}/toggle`, { method: "POST" });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     loadTasks();
   } catch (e) {
@@ -560,13 +690,12 @@ window.deleteTask = async function(id) {
   }
 
   try {
-    const r = await fetch(`/api/tasks/${id}`, { method: "DELETE" });
+    const r = await fetchWithAuth(`/api/tasks/${id}`, { method: "DELETE" });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     loadHistory();
     showToast("Task deleted", async () => {
-      // Undo: the server soft-deletes, so restore the exact same task (no LLM call).
       try {
-        const rr = await fetch(`/api/tasks/${id}/restore`, { method: "POST" });
+        const rr = await fetchWithAuth(`/api/tasks/${id}/restore`, { method: "POST" });
         if (!rr.ok) throw new Error((await rr.json()).error || `HTTP ${rr.status}`);
       } catch (e) {
         showError("Could not undo delete: " + e.message);
@@ -588,7 +717,7 @@ els.clearCompletedBtn.addEventListener("click", async () => {
     return;
   }
   try {
-    const r = await fetch("/api/tasks/clear-completed", { method: "POST" });
+    const r = await fetchWithAuth("/api/tasks/clear-completed", { method: "POST" });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     loadHistory();
     showToast(`Cleared ${completedCount} completed task(s).`);
@@ -613,7 +742,7 @@ els.taskSearchInput.addEventListener("input", renderTaskList);
 // ---------- History View ----------
 async function loadHistory() {
   try {
-    const r = await fetch("/api/history?limit=40");
+    const r = await fetchWithAuth("/api/history?limit=40");
     const { history } = await r.json();
     cachedHistory = history || [];
     renderHistoryList();
@@ -685,7 +814,93 @@ SAMPLES.forEach((s) => {
   els.samples.appendChild(b);
 });
 
+// ---------- Auth Modal & Form Events ----------
+if (els.openAuthModalBtn) els.openAuthModalBtn.addEventListener("click", () => openAuthModal());
+if (els.closeAuthModalBtn) els.closeAuthModalBtn.addEventListener("click", () => closeAuthModal());
+
+if (els.tabSignIn) els.tabSignIn.addEventListener("click", () => switchAuthTab("signin"));
+if (els.tabSignUp) els.tabSignUp.addEventListener("click", () => switchAuthTab("signup"));
+
+if (els.logoutBtn) {
+  els.logoutBtn.addEventListener("click", async () => {
+    try {
+      await fetchWithAuth("/api/auth/logout", { method: "POST" });
+    } catch (e) {
+      // Ignore network errors on logout
+    }
+    onLoggedOut();
+    showToast("Signed out successfully.");
+  });
+}
+
+// Sign In Form Submit
+if (els.signInForm) {
+  els.signInForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearAuthError();
+    const email = els.loginEmail.value.trim();
+    const password = els.loginPassword.value;
+
+    els.signInSubmitBtn.disabled = true;
+    els.signInSubmitBtn.textContent = "Signing In…";
+
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showAuthError(data.error || "Sign in failed.");
+      } else {
+        onLoggedIn(data.user, data.token);
+      }
+    } catch (err) {
+      showAuthError("Connection error. Please try again.");
+    } finally {
+      els.signInSubmitBtn.disabled = false;
+      els.signInSubmitBtn.textContent = "Sign In";
+    }
+  });
+}
+
+// Sign Up Form Submit
+if (els.signUpForm) {
+  els.signUpForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearAuthError();
+    const displayName = els.regName.value.trim();
+    const email = els.regEmail.value.trim();
+    const password = els.regPassword.value;
+
+    els.signUpSubmitBtn.disabled = true;
+    els.signUpSubmitBtn.textContent = "Creating Account…";
+
+    try {
+      const res = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, display_name: displayName }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showAuthError(data.error || "Sign up failed.");
+      } else {
+        onLoggedIn(data.user, data.token);
+      }
+    } catch (err) {
+      showAuthError("Connection error. Please try again.");
+    } finally {
+      els.signUpSubmitBtn.disabled = false;
+      els.signUpSubmitBtn.textContent = "Create Free Account";
+    }
+  });
+}
+
 // Initial boot
 checkHealth();
-loadTasks();
-loadHistory();
+checkAuth().then(() => {
+  loadTasks();
+  loadHistory();
+});

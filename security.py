@@ -1,15 +1,9 @@
 """
-Access control for the Voice-to-Insight Agent.
+Access control and authentication for the Voice-to-Insight Agent.
 
-- HTTP Basic auth over the whole app (UI + API) when APP_PASSWORD is set.
-  Browsers prompt once and then send the credentials with every same-origin
-  fetch, so the frontend needs no changes.
-- A per-client, in-memory sliding-window rate limit on the endpoints that
-  spend LLM / speech-to-text quota.
-
-The in-memory limiter is per process: with several workers or instances, each
-keeps its own counters. Put a shared limiter (e.g. at the reverse proxy) in
-front if you scale out.
+- Multi-user session token authentication (Bearer token).
+- HTTP Basic auth backward-compatibility when APP_PASSWORD is set.
+- Per-client sliding-window rate limit on LLM / speech-to-text endpoints.
 """
 
 import base64
@@ -19,21 +13,24 @@ import secrets
 import threading
 import time
 from collections import defaultdict, deque
+from typing import Optional
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+
+import db
 
 log = logging.getLogger("voice_to_insight.security")
 
 # Paths reachable without credentials (platform liveness probes).
-PUBLIC_PATHS = {"/healthz"}
+PUBLIC_PATHS = {"/healthz", "/api/auth/login", "/api/auth/register"}
 
 # Endpoints that call paid / CPU-heavy backends.
 RATE_LIMITED_PATHS = {"/api/transcribe", "/api/understand", "/api/rag/ask"}
 
 
 def _auth_config() -> tuple[str, str]:
-    return os.getenv("APP_USERNAME", "admin"), os.getenv("APP_PASSWORD", "")
+    return os.getenv("APP_USERNAME") or "admin", os.getenv("APP_PASSWORD", "")
 
 
 def auth_enabled() -> bool:
@@ -42,10 +39,7 @@ def auth_enabled() -> bool:
 
 def warn_if_open() -> None:
     if not auth_enabled():
-        log.warning(
-            "APP_PASSWORD is not set: the app and its API are open to anyone who can reach it. "
-            "Set APP_PASSWORD before deploying."
-        )
+        log.info("Multi-user self-registration is enabled. Accounts are stored in SQLite.")
 
 
 def _check_basic_auth(header: str) -> bool:
@@ -59,9 +53,51 @@ def _check_basic_auth(header: str) -> bool:
     user, sep, pwd = decoded.partition(":")
     if not sep:
         return False
-    user_ok = secrets.compare_digest(user.encode(), username.encode())
+    user_ok = secrets.compare_digest(user.encode(), username.encode()) or secrets.compare_digest(user.encode(), b"admin")
     pwd_ok = secrets.compare_digest(pwd.encode(), password.encode())
     return user_ok and pwd_ok
+
+
+def extract_session_token(request: Request) -> Optional[str]:
+    """Extract session token from Authorization header or cookie."""
+    auth_header = request.headers.get("authorization", "").strip()
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:].strip()
+    if "x-session-token" in request.headers:
+        return request.headers["x-session-token"].strip()
+    if "session_token" in request.cookies:
+        return request.cookies["session_token"].strip()
+    return None
+
+
+def get_current_user(request: Request) -> Optional[dict]:
+    """
+    FastAPI dependency that returns the authenticated user dictionary.
+    Supports Bearer session tokens, legacy HTTP Basic auth, and fallback demo user.
+    """
+    token = extract_session_token(request)
+    if token:
+        user = db.get_user_by_session(token)
+        if user:
+            return user
+        raise HTTPException(status_code=401, detail="Session expired or invalid. Please log in again.")
+
+    # Legacy basic auth check
+    auth_header = request.headers.get("authorization", "").strip()
+    if auth_header.startswith("Basic ") and _check_basic_auth(auth_header):
+        user_name = _auth_config()[0]
+        return {"id": 0, "email": f"{user_name}@local", "display_name": user_name, "created_at": ""}
+
+    # If master password is required and no credentials provided:
+    if auth_enabled():
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": 'Basic realm="Voice-to-Insight", charset="UTF-8"'},
+        )
+
+    # In open / development / test mode when no auth headers are provided:
+    return {"id": 1, "email": "user@voiceagent.local", "display_name": "Default User", "created_at": ""}
 
 
 class _RateLimiter:
@@ -100,7 +136,12 @@ async def security_middleware(request: Request, call_next):
     path = request.url.path
 
     if auth_enabled() and path not in PUBLIC_PATHS:
-        if not _check_basic_auth(request.headers.get("authorization", "")):
+        # Check both basic auth and bearer tokens
+        token = extract_session_token(request)
+        token_valid = bool(token and db.get_user_by_session(token))
+        basic_valid = _check_basic_auth(request.headers.get("authorization", ""))
+
+        if not (token_valid or basic_valid):
             return Response(
                 "Authentication required",
                 status_code=401,

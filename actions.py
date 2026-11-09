@@ -81,7 +81,13 @@ def _push_to_notion(task: dict) -> dict:
         return {"pushed": False, "reason": reason}
 
 
-def dispatch(intent: str, data: dict, transcript: str = "", locale: str = "") -> dict:
+def dispatch(
+    intent: str,
+    data: dict,
+    transcript: str = "",
+    locale: str = "",
+    user_id: Optional[int] = None,
+) -> dict:
     """Take the action for a given intent, persist in SQLite, and return display-ready result."""
 
     # 1. Save voice note in SQLite (for search & history)
@@ -93,6 +99,7 @@ def dispatch(intent: str, data: dict, transcript: str = "", locale: str = "") ->
                 locale=locale,
                 intent=intent,
                 raw_data=data,
+                user_id=user_id,
             )
         except Exception:
             note_id = None
@@ -127,6 +134,7 @@ def dispatch(intent: str, data: dict, transcript: str = "", locale: str = "") ->
             note_id=note_id,
             notion_page_id=notion_page_id,
             notion_url=notion_url,
+            user_id=user_id,
         )
 
         return {
@@ -146,6 +154,7 @@ def dispatch(intent: str, data: dict, transcript: str = "", locale: str = "") ->
             caption=caption,
             tone=tone,
             note_id=note_id,
+            user_id=user_id,
         )
 
         return {
@@ -165,6 +174,7 @@ def dispatch(intent: str, data: dict, transcript: str = "", locale: str = "") ->
             summary_text=summary_text,
             key_points=key_points,
             note_id=note_id,
+            user_id=user_id,
         )
 
         return {
@@ -177,7 +187,7 @@ def dispatch(intent: str, data: dict, transcript: str = "", locale: str = "") ->
     # --- Intent: Query (Voice RAG) -------------------------------------------
     if intent == "query":
         question = data.get("question") or transcript
-        rag_result = rag.answer_query(question)
+        rag_result = rag.answer_query(question, user_id=user_id)
 
         return {
             "type": "rag_answer",
