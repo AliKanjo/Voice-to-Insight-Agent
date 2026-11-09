@@ -64,6 +64,7 @@ def init_db() -> None:
                 title TEXT NOT NULL,
                 owner TEXT,
                 due_date TEXT,
+                due_date_iso TEXT,
                 priority TEXT NOT NULL DEFAULT 'medium',
                 status TEXT NOT NULL DEFAULT 'pending',
                 notion_page_id TEXT,
@@ -103,6 +104,8 @@ def init_db() -> None:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
         if "deleted_at" not in cols:
             conn.execute("ALTER TABLE tasks ADD COLUMN deleted_at TEXT")
+        if "due_date_iso" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN due_date_iso TEXT")
     purge_deleted_tasks()
 
 
@@ -141,6 +144,7 @@ def save_task(
     title: str,
     owner: Optional[str] = None,
     due_date: Optional[str] = None,
+    due_date_iso: Optional[str] = None,
     priority: str = "medium",
     note_id: Optional[int] = None,
     notion_page_id: Optional[str] = None,
@@ -151,10 +155,11 @@ def save_task(
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO tasks (note_id, title, owner, due_date, priority, status, notion_page_id, notion_url, created_at)
-            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+            INSERT INTO tasks (note_id, title, owner, due_date, due_date_iso, priority, status,
+                               notion_page_id, notion_url, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
             """,
-            (note_id, title, owner, due_date, priority, notion_page_id, notion_url, created_at),
+            (note_id, title, owner, due_date, due_date_iso, priority, notion_page_id, notion_url, created_at),
         )
         task_id = cur.lastrowid
         conn.commit()
@@ -165,6 +170,7 @@ def save_task(
             "title": title,
             "owner": owner,
             "due_date": due_date,
+            "due_date_iso": due_date_iso,
             "priority": priority,
             "status": "pending",
             "notion_page_id": notion_page_id,

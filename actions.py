@@ -24,69 +24,58 @@ def _format_notion_url(page_id: str) -> str:
     return f"https://notion.so/{clean_id}"
 
 
+def _notion_post(api_key: str, payload: dict) -> httpx.Response:
+    return httpx.post(
+        "https://api.notion.com/v1/pages",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Notion-Version": _NOTION_VERSION,
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=15.0,
+    )
+
+
 def _push_to_notion(task: dict) -> dict:
-    """Push a task to Notion with title, priority tag, and due date."""
+    """Push a task to Notion with title, priority (select) and due date (date).
+
+    Column names are configurable (NOTION_PRIORITY_PROPERTY, NOTION_DUE_PROPERTY).
+    If the database rejects the payload (e.g. a column is missing or has another
+    type), retry without the due date, then with the title only."""
     api_key = os.getenv("NOTION_API_KEY")
     db_id = os.getenv("NOTION_DATABASE_ID")
     if not api_key or not db_id:
         return {"pushed": False, "reason": "Notion not configured (optional)."}
 
-    title = task.get("title", "(untitled task)")
+    title = task.get("title") or "(untitled task)"
     priority = (task.get("priority") or "medium").capitalize()
-    due_date = task.get("due_date")
+    due_iso = task.get("due_date_iso")
+    priority_prop = os.getenv("NOTION_PRIORITY_PROPERTY", "Priority")
+    due_prop = os.getenv("NOTION_DUE_PROPERTY", "Due Date")
 
-    # Build properties payload
-    properties = {
-        "Name": {"title": [{"text": {"content": title}}]},
-    }
-
-    # Attempt to include Priority select if user configured a select column named "Priority"
-    if priority:
-        properties["Priority"] = {"select": {"name": priority}}
-
-    payload = {
-        "parent": {"database_id": db_id},
-        "properties": properties,
-    }
+    title_only = {"Name": {"title": [{"text": {"content": title}}]}}
+    with_priority = {**title_only, priority_prop: {"select": {"name": priority}}}
+    attempts = []
+    if due_iso:
+        attempts.append({**with_priority, due_prop: {"date": {"start": due_iso}}})
+    attempts += [with_priority, title_only]
 
     try:
-        resp = httpx.post(
-            "https://api.notion.com/v1/pages",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Notion-Version": _NOTION_VERSION,
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=15.0,
+        resp = None
+        for properties in attempts:
+            resp = _notion_post(api_key, {"parent": {"database_id": db_id}, "properties": properties})
+            # Only schema/validation errors are worth retrying with fewer properties.
+            if resp.status_code != 400:
+                break
+        if resp.status_code < 400:
+            page_id = resp.json().get("id")
+            return {"pushed": True, "page_id": page_id, "url": _format_notion_url(page_id)}
+        reason = errors.public_message(
+            f"Notion {resp.status_code}: {resp.text[:300]}",
+            f"Notion sync failed (HTTP {resp.status_code}).",
         )
-        if resp.status_code >= 400:
-            # If failed due to strict property name mismatch (e.g. "Priority" column missing), retry with just title
-            fallback_payload = {
-                "parent": {"database_id": db_id},
-                "properties": {"Name": {"title": [{"text": {"content": title}}]}},
-            }
-            fb_resp = httpx.post(
-                "https://api.notion.com/v1/pages",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Notion-Version": _NOTION_VERSION,
-                    "Content-Type": "application/json",
-                },
-                json=fallback_payload,
-                timeout=15.0,
-            )
-            if fb_resp.status_code < 400:
-                page_id = fb_resp.json().get("id")
-                return {"pushed": True, "page_id": page_id, "url": _format_notion_url(page_id)}
-            reason = errors.public_message(
-                f"Notion {fb_resp.status_code}: {fb_resp.text[:300]}",
-                f"Notion sync failed (HTTP {fb_resp.status_code}).",
-            )
-            return {"pushed": False, "reason": reason}
-
-        page_id = resp.json().get("id")
-        return {"pushed": True, "page_id": page_id, "url": _format_notion_url(page_id)}
+        return {"pushed": False, "reason": reason}
     except Exception as exc:
         reason = errors.public_message(f"Notion request failed: {exc}", "Notion sync failed.", exc=exc)
         return {"pushed": False, "reason": reason}
@@ -113,6 +102,7 @@ def dispatch(intent: str, data: dict, transcript: str = "", locale: str = "") ->
         title = data.get("title", "(untitled task)")
         owner = data.get("owner")
         due_date = data.get("due_date")
+        due_date_iso = data.get("due_date_iso")
         priority = data.get("priority", "medium")
 
         # Push to Notion (optional)
@@ -120,6 +110,7 @@ def dispatch(intent: str, data: dict, transcript: str = "", locale: str = "") ->
             "title": title,
             "owner": owner,
             "due_date": due_date,
+            "due_date_iso": due_date_iso,
             "priority": priority,
         })
 
@@ -131,6 +122,7 @@ def dispatch(intent: str, data: dict, transcript: str = "", locale: str = "") ->
             title=title,
             owner=owner,
             due_date=due_date,
+            due_date_iso=due_date_iso,
             priority=priority,
             note_id=note_id,
             notion_page_id=notion_page_id,

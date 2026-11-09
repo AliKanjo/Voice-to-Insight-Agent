@@ -93,7 +93,8 @@ def _transcribe_openai(audio_path: str) -> dict:
         raise STTError("OPENAI_API_KEY is not set — add it to your .env file.")
 
     try:
-        client = OpenAI(api_key=key)
+        timeout = float(os.getenv("STT_TIMEOUT_SECONDS", "120"))
+        client = OpenAI(api_key=key, timeout=timeout, max_retries=1)
         with open(audio_path, "rb") as f:
             result = client.audio.transcriptions.create(
                 model=OPENAI_STT_MODEL,

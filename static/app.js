@@ -470,6 +470,12 @@ async function loadTasks() {
   }
 }
 
+// Local calendar date as YYYY-MM-DD (comparable with the server's due_date_iso strings).
+function todayIso() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function renderTaskList() {
   const query = (els.taskSearchInput.value || "").trim().toLowerCase();
 
@@ -498,6 +504,12 @@ function renderTaskList() {
   els.tasks.innerHTML = filtered.map((t) => {
     const isDone = t.status === "completed";
     const rtlCls = isArabic(t.title) ? "rtl-text" : "";
+    const overdue = !isDone && t.due_date_iso && t.due_date_iso < todayIso();
+    const dueIso = t.due_date_iso && t.due_date_iso !== t.due_date
+      ? ` <span class="due-iso">(${escapeHtml(t.due_date_iso)})</span>` : "";
+    const dueHtml = t.due_date
+      ? " · 📅 " + escapeHtml(t.due_date) + dueIso
+      : (t.due_date_iso ? " · 📅 " + escapeHtml(t.due_date_iso) : "");
     const notionLink = t.notion_url
       ? `<a href="${escapeHtml(t.notion_url)}" target="_blank" class="notion-pill">Notion ↗</a>`
       : "";
@@ -508,9 +520,10 @@ function renderTaskList() {
           <div>
             <div class="t ${rtlCls}">${escapeHtml(t.title)}</div>
             <div class="meta">
-              <span class="pri ${t.priority}">${t.priority}</span>
+              <span class="pri ${escapeHtml(t.priority)}">${escapeHtml(t.priority)}</span>
+              ${overdue ? '<span class="overdue">overdue</span>' : ""}
               ${t.owner ? " · 👤 " + escapeHtml(t.owner) : ""}
-              ${t.due_date ? " · 📅 " + escapeHtml(t.due_date) : ""}
+              ${dueHtml}
               ${notionLink}
             </div>
           </div>
