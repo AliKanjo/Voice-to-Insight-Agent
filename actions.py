@@ -13,6 +13,7 @@ from typing import Optional
 import httpx
 
 import db
+import errors
 import rag
 
 _NOTION_VERSION = "2022-06-28"
@@ -78,12 +79,17 @@ def _push_to_notion(task: dict) -> dict:
             if fb_resp.status_code < 400:
                 page_id = fb_resp.json().get("id")
                 return {"pushed": True, "page_id": page_id, "url": _format_notion_url(page_id)}
-            return {"pushed": False, "reason": f"Notion {resp.status_code}: {resp.text[:300]}"}
+            reason = errors.public_message(
+                f"Notion {fb_resp.status_code}: {fb_resp.text[:300]}",
+                f"Notion sync failed (HTTP {fb_resp.status_code}).",
+            )
+            return {"pushed": False, "reason": reason}
 
         page_id = resp.json().get("id")
         return {"pushed": True, "page_id": page_id, "url": _format_notion_url(page_id)}
     except Exception as exc:
-        return {"pushed": False, "reason": f"Notion request failed: {exc}"}
+        reason = errors.public_message(f"Notion request failed: {exc}", "Notion sync failed.", exc=exc)
+        return {"pushed": False, "reason": reason}
 
 
 def dispatch(intent: str, data: dict, transcript: str = "", locale: str = "") -> dict:

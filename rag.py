@@ -9,6 +9,7 @@ import json
 from typing import Any
 
 import arabic_norm
+import errors
 import db
 import understand
 
@@ -84,10 +85,17 @@ Provide a direct answer:"""
             ],
         )
         answer_text = (resp.choices[0].message.content or "").strip()
+        ok = True
     except Exception as exc:
-        answer_text = f"Could not generate answer: {exc}"
+        ok = False
+        answer_text = errors.public_message(
+            f"RAG answer generation failed: {exc}",
+            "Sorry, I couldn't generate an answer right now. Please try again.",
+            exc=exc,
+        )
 
     return {
+        "ok": ok,
         "question": clean_q,
         "answer": answer_text,
         "citations": citations[:4],

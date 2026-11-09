@@ -8,7 +8,7 @@ and fast full-text search for RAG knowledge retrieval.
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import arabic_norm
@@ -19,6 +19,16 @@ DB_PATH = os.path.abspath(
     os.getenv("DB_PATH") or os.path.join(os.path.dirname(__file__), "data", "insights.db")
 )
 DB_DIR = os.path.dirname(DB_PATH)
+
+
+# Soft-deleted tasks can be restored (the UI's "Undo") for this long, then they are
+# purged together with their voice note and search index entry.
+UNDO_GRACE = timedelta(minutes=10)
+
+# SQL fragment: hide voice notes whose task has been deleted (alias must be `vn`).
+_NOT_DELETED_NOTE = (
+    "NOT EXISTS (SELECT 1 FROM tasks dt WHERE dt.note_id = vn.id AND dt.deleted_at IS NOT NULL)"
+)
 
 
 def _now_iso() -> str:
@@ -59,7 +69,8 @@ def init_db() -> None:
                 notion_page_id TEXT,
                 notion_url TEXT,
                 created_at TEXT NOT NULL,
-                completed_at TEXT
+                completed_at TEXT,
+                deleted_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS content_items (
@@ -88,6 +99,11 @@ def init_db() -> None:
                 tokenize = 'unicode61'
             );
         """)
+        # Migrate databases created before soft delete existed.
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+        if "deleted_at" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN deleted_at TEXT")
+    purge_deleted_tasks()
 
 
 # --- Voice Note Operations ------------------------------------------------
@@ -161,16 +177,21 @@ def get_tasks(status: Optional[str] = None) -> list[dict]:
     with get_connection() as conn:
         if status:
             rows = conn.execute(
-                "SELECT * FROM tasks WHERE status = ? ORDER BY id DESC", (status,)
+                "SELECT * FROM tasks WHERE status = ? AND deleted_at IS NULL ORDER BY id DESC",
+                (status,),
             ).fetchall()
         else:
-            rows = conn.execute("SELECT * FROM tasks ORDER BY id DESC").fetchall()
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE deleted_at IS NULL ORDER BY id DESC"
+            ).fetchall()
         return [dict(r) for r in rows]
 
 
 def toggle_task(task_id: int) -> Optional[dict]:
     with get_connection() as conn:
-        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM tasks WHERE id = ? AND deleted_at IS NULL", (task_id,)
+        ).fetchone()
         if not row:
             return None
         current_status = row["status"]
@@ -187,18 +208,66 @@ def toggle_task(task_id: int) -> Optional[dict]:
         return dict(updated)
 
 
+def _hard_delete_tasks(conn: sqlite3.Connection, where: str, params: tuple) -> int:
+    """Delete matching tasks plus the voice notes and search entries they came from,
+    so deleted tasks stop showing up in history and RAG answers."""
+    rows = conn.execute(f"SELECT id, note_id FROM tasks WHERE {where}", params).fetchall()
+    if not rows:
+        return 0
+    task_ids = [r["id"] for r in rows]
+    note_ids = [r["note_id"] for r in rows if r["note_id"] is not None]
+    marks = ",".join("?" * len(task_ids))
+    conn.execute(f"DELETE FROM tasks WHERE id IN ({marks})", task_ids)
+    if note_ids:
+        nmarks = ",".join("?" * len(note_ids))
+        conn.execute(f"DELETE FROM notes_fts WHERE note_id IN ({nmarks})", note_ids)
+        conn.execute(f"DELETE FROM voice_notes WHERE id IN ({nmarks})", note_ids)
+    return len(task_ids)
+
+
 def delete_task(task_id: int) -> bool:
+    """Soft delete: the task disappears everywhere but can be restored within UNDO_GRACE."""
+    purge_deleted_tasks()
     with get_connection() as conn:
-        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        cur = conn.execute(
+            "UPDATE tasks SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+            (_now_iso(), task_id),
+        )
         conn.commit()
         return cur.rowcount > 0
 
 
+def restore_task(task_id: int) -> Optional[dict]:
+    """Undo a soft delete. Returns the restored task, or None if there is nothing to restore."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE tasks SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL",
+            (task_id,),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
+
+
+def purge_deleted_tasks() -> int:
+    """Permanently remove tasks soft-deleted longer than UNDO_GRACE ago."""
+    cutoff = (datetime.now(timezone.utc) - UNDO_GRACE).isoformat(timespec="seconds")
+    with get_connection() as conn:
+        count = _hard_delete_tasks(
+            conn, "deleted_at IS NOT NULL AND deleted_at < ?", (cutoff,)
+        )
+        conn.commit()
+        return count
+
+
 def clear_completed_tasks() -> int:
     with get_connection() as conn:
-        cur = conn.execute("DELETE FROM tasks WHERE status = 'completed'")
+        count = _hard_delete_tasks(
+            conn, "status = 'completed' AND deleted_at IS NULL", ()
+        )
         conn.commit()
-        return cur.rowcount
+        return count
 
 
 # --- Content Item Operations ----------------------------------------------
@@ -258,9 +327,10 @@ def get_history(limit: int = 50) -> list[dict]:
     """Retrieve recent voice notes with their classified data."""
     with get_connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT id, transcript, locale, intent, raw_data, created_at
-            FROM voice_notes
+            FROM voice_notes vn
+            WHERE {_NOT_DELETED_NOTE}
             ORDER BY id DESC
             LIMIT ?
             """,
@@ -297,11 +367,11 @@ def search_notes(query_text: str, limit: int = 6) -> list[dict]:
         if fts_query:
             try:
                 fts_rows = conn.execute(
-                    """
+                    f"""
                     SELECT vn.*, rank
                     FROM notes_fts fts
                     JOIN voice_notes vn ON fts.note_id = vn.id
-                    WHERE notes_fts MATCH ?
+                    WHERE notes_fts MATCH ? AND {_NOT_DELETED_NOTE}
                     ORDER BY rank
                     LIMIT ?
                     """,
@@ -316,9 +386,9 @@ def search_notes(query_text: str, limit: int = 6) -> list[dict]:
         if len(results) < limit:
             like_pattern = f"%{norm_query}%"
             rows = conn.execute(
-                """
-                SELECT * FROM voice_notes
-                WHERE normalized_transcript LIKE ? OR transcript LIKE ?
+                f"""
+                SELECT * FROM voice_notes vn
+                WHERE (normalized_transcript LIKE ? OR transcript LIKE ?) AND {_NOT_DELETED_NOTE}
                 ORDER BY id DESC
                 LIMIT ?
                 """,
@@ -334,6 +404,7 @@ def search_notes(query_text: str, limit: int = 6) -> list[dict]:
                 """
                 SELECT vn.* FROM tasks t
                 JOIN voice_notes vn ON t.note_id = vn.id
+                WHERE t.deleted_at IS NULL
                 ORDER BY t.id DESC LIMIT ?
                 """,
                 (limit,),
