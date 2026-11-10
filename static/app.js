@@ -172,6 +172,7 @@ function onLoggedIn(user, token) {
   showToast(`Welcome, ${user.display_name || user.email}!`);
   loadTasks();
   loadHistory();
+  loadDemoStatus();
 }
 
 function onLoggedOut() {
@@ -184,6 +185,7 @@ function onLoggedOut() {
   cachedHistory = [];
   renderTaskList();
   renderHistoryList();
+  loadDemoStatus();
 }
 
 async function checkAuth() {
@@ -424,6 +426,7 @@ async function runUnderstand(transcript, state, locale = "") {
     state.classify = { status: "error", error: res.error + (res.raw ? "\n" + JSON.stringify(res.raw, null, 2) : "") };
     renderPipeline(state);
     showError("Understanding failed: " + res.error);
+    loadDemoStatus();
     return;
   }
 
@@ -433,6 +436,7 @@ async function runUnderstand(transcript, state, locale = "") {
 
   loadTasks();
   loadHistory();
+  loadDemoStatus();
 }
 
 // ---------- Text Fallback ----------
@@ -898,9 +902,40 @@ if (els.signUpForm) {
   });
 }
 
+// ---------- Public demo banner ----------
+// Shows "public demo" info and how many free requests the visitor has left today.
+async function loadDemoStatus() {
+  const banner = document.getElementById("demoBanner");
+  if (!banner) return;
+  try {
+    const r = await fetch("/api/demo/status", { headers: getAuthHeaders() });
+    const s = await r.json();
+    if (!s.demo) { banner.style.display = "none"; return; }
+    let msg;
+    if (s.closed) {
+      msg = "This demo has ended. Thanks for trying it!";
+    } else {
+      msg = `Public demo · Your notes are private to your account and deleted after ${s.retention_hours} hours.`;
+      if (typeof s.remaining_today === "number") {
+        msg += s.remaining_today > 0
+          ? ` · ${s.remaining_today} of ${s.daily_limit} free requests left today.`
+          : " · You've used today's free requests. Come back tomorrow!";
+      } else {
+        msg += ` · Sign in to get ${s.daily_limit} free requests a day.`;
+      }
+    }
+    banner.textContent = msg;  // textContent: never interpret as HTML
+    banner.classList.toggle("limit", Boolean(s.closed || s.remaining_today === 0));
+    banner.style.display = "block";
+  } catch (e) {
+    console.error("Could not load demo status", e);
+  }
+}
+
 // Initial boot
 checkHealth();
 checkAuth().then(() => {
   loadTasks();
   loadHistory();
+  loadDemoStatus();
 });

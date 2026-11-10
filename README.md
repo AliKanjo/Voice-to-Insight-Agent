@@ -72,6 +72,19 @@ Open <http://localhost:8000>.
 
 Check integration status any time at <http://localhost:8000/api/health>.
 
+## Public demo (share a live link on your own key)
+
+Set `DEMO_MODE=true` (and leave `APP_PASSWORD` empty) to share the app publicly, e.g. on LinkedIn, while capping what visitors can spend on your Gemini key:
+
+- **Sign-in required.** Visitors create a free account and get a private workspace; anonymous visitors can't call the model.
+- **Daily caps (UTC)** on requests that call the language model: per account (`DEMO_DAILY_PER_USER`, default 10), per IP (`DEMO_DAILY_PER_IP`, 30) and in total (`DEMO_DAILY_TOTAL`, 200). A spoken question counts as one request. Voice transcriptions have their own per-account cap (`DEMO_TRANSCRIBE_DAILY_PER_USER`, 20) and sign-ups are capped per IP (`DEMO_SIGNUPS_PER_IP`, 3). Set any cap to `0` to block it. Counters are stored in SQLite, so restarts don't reset them.
+- **Auto-delete.** Notes, tasks, captions and summaries are deleted after `DEMO_RETENTION_HOURS` (default 24).
+- **Notion is off**, so visitors' tasks never reach your Notion.
+- **A banner** tells visitors it's a demo and how many free requests they have left today.
+- **Closing it:** set `DEMO_CLOSED=true`. The site stays up and existing notes stay readable, but the model is no longer called.
+
+As a backstop on Google's side, use a separate Gemini API key for the demo, in its own Google AI Studio project with billing off: then Google can't charge you, and the worst case is the key hitting its free-tier limit. Delete the key when the demo is over.
+
 ## Deploying
 
 Set these in your hosting platform's environment (they take precedence over any `.env` file):

@@ -16,7 +16,7 @@ import tempfile
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,6 +29,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 import actions
 import db
+import demo
 import errors
 import rag
 import security
@@ -38,6 +39,21 @@ import understand
 app = FastAPI(title="Voice-to-Insight Agent")
 app.middleware("http")(security.security_middleware)
 security.warn_if_open()
+if demo.enabled() and security.auth_enabled():
+    logging.getLogger("voice_to_insight").warning(
+        "DEMO_MODE and APP_PASSWORD are both set: APP_PASSWORD locks the whole site, so the "
+        "public can't reach the demo. Unset APP_PASSWORD for a public demo."
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    # The frontend reads `error`; keep FastAPI's usual `detail` too.
+    return JSONResponse(
+        {"error": exc.detail, "detail": exc.detail},
+        status_code=exc.status_code,
+        headers=getattr(exc, "headers", None),
+    )
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
@@ -118,6 +134,7 @@ def health() -> dict:
         "notion_configured": _key_configured("NOTION_API_KEY") and bool(os.getenv("NOTION_DATABASE_ID")),
         "database": "sqlite",
         "auth_enabled": security.auth_enabled(),
+        "demo_mode": demo.enabled(),
         "arabic_normalization": True,
         "rag_enabled": True,
     }
@@ -125,8 +142,13 @@ def health() -> dict:
 
 # --- Multi-User Auth ------------------------------------------------------
 @app.post("/api/auth/register")
-def register(req: RegisterRequest) -> JSONResponse:
+def register(req: RegisterRequest, request: Request) -> JSONResponse:
     """Register a new user account and return a session token."""
+    if security.auth_enabled():
+        # APP_PASSWORD means a private instance: self-service sign-up would let anyone
+        # obtain a session token and get past the master password.
+        return JSONResponse({"error": "Sign-up is disabled on this private instance."}, status_code=403)
+    demo.charge_signup(request)
     try:
         user = db.create_user(req.email, req.password, req.display_name)
         token = db.create_session(user["id"])
@@ -165,7 +187,9 @@ def get_me(current_user: dict = Depends(security.get_current_user)) -> JSONRespo
 # --- Stage 2: speech-to-text ---------------------------------------------
 @app.post("/api/transcribe")
 async def transcribe(
-    audio: UploadFile, current_user: dict = Depends(security.get_current_user)
+    request: Request,
+    audio: UploadFile,
+    current_user: dict = Depends(security.get_current_user),
 ) -> JSONResponse:
     """Accept an audio file (WAV from the browser), return transcript + locale."""
     ext = os.path.splitext(audio.filename or "")[1].lower()
@@ -197,9 +221,12 @@ async def transcribe(
         if size == 0:
             return JSONResponse({"error": "Empty audio file.", "stage": "transcribe"}, status_code=400)
 
+        demo.charge_transcription(request, current_user)
         # Whisper is CPU-bound and synchronous; keep it off the event loop.
         result = await run_in_threadpool(stt.transcribe, tmp_path)
         return JSONResponse(result)
+    except HTTPException:
+        raise
     except stt.NoSpeechError as exc:
         return JSONResponse({"error": str(exc), "stage": "transcribe"}, status_code=422)
     except stt.STTError as exc:
@@ -216,9 +243,13 @@ async def transcribe(
 # --- Stage 3 + 4: understand, then act -----------------------------------
 @app.post("/api/understand")
 def understand_endpoint(
-    req: UnderstandRequest, current_user: dict = Depends(security.get_current_user)
+    req: UnderstandRequest,
+    request: Request,
+    current_user: dict = Depends(security.get_current_user),
 ) -> JSONResponse:
     """Classify + extract, then dispatch the matching action into SQLite / Notion / RAG."""
+    if req.transcript.strip():  # empty input never reaches the model, so it isn't charged
+        demo.charge_llm(request, current_user)
     result = understand.understand(req.transcript)
 
     if result.get("intent") == "error":
@@ -318,13 +349,27 @@ def get_history(
 
 @app.post("/api/rag/ask")
 def rag_ask(
-    req: RagRequest, current_user: dict = Depends(security.get_current_user)
+    req: RagRequest,
+    request: Request,
+    current_user: dict = Depends(security.get_current_user),
 ) -> JSONResponse:
     """Search past voice notes and synthesize a grounded answer for the authenticated user."""
     if not req.question.strip():
         return JSONResponse({"error": "Empty question."}, status_code=400)
+    demo.charge_llm(request, current_user)
     res = rag.answer_query(req.question, user_id=current_user.get("id"))
     return JSONResponse(res, status_code=200 if res.get("ok") else 502)
+
+
+# --- Public demo ----------------------------------------------------------
+@app.get("/api/demo/status")
+def demo_status(request: Request) -> dict:
+    """Whether this is the public demo, and how many free requests the caller has left today."""
+    try:
+        user = security.get_current_user(request)
+    except HTTPException:
+        user = None
+    return demo.status(request, user)
 
 
 # --- Notion Status --------------------------------------------------------
