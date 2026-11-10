@@ -26,6 +26,9 @@ os.environ.update(
         "NOTION_DATABASE_ID": "",
         "APP_TIMEZONE": "UTC",
         "MAX_UPLOAD_MB": "25",
+        "APP_USERNAME": "admin",
+        "DEMO_MODE": "false",
+        "DEMO_CLOSED": "false",
     }
 )
 

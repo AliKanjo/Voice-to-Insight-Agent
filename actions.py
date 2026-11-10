@@ -13,6 +13,7 @@ from typing import Optional
 import httpx
 
 import db
+import demo
 import errors
 import rag
 
@@ -112,14 +113,18 @@ def dispatch(
         due_date_iso = data.get("due_date_iso")
         priority = data.get("priority", "medium")
 
-        # Push to Notion (optional)
-        notion = _push_to_notion({
-            "title": title,
-            "owner": owner,
-            "due_date": due_date,
-            "due_date_iso": due_date_iso,
-            "priority": priority,
-        })
+        # Push to Notion (optional). Never in the public demo: visitors' tasks must not
+        # land in the owner's Notion workspace.
+        if demo.enabled():
+            notion = {"pushed": False, "reason": "Notion sync is off in the public demo."}
+        else:
+            notion = _push_to_notion({
+                "title": title,
+                "owner": owner,
+                "due_date": due_date,
+                "due_date_iso": due_date_iso,
+                "priority": priority,
+            })
 
         notion_page_id = notion.get("page_id") if notion.get("pushed") else None
         notion_url = notion.get("url") if notion.get("pushed") else None

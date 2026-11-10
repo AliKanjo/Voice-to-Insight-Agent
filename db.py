@@ -60,6 +60,14 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             );
 
+            -- Daily request counters for the public demo's quotas (key e.g. "user:5", "ip:1.2.3.4").
+            CREATE TABLE IF NOT EXISTS usage_counters (
+                day TEXT NOT NULL,
+                key TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (day, key)
+            );
+
             CREATE TABLE IF NOT EXISTS sessions (
                 token TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -707,3 +715,55 @@ def search_notes(
 
 # Initialize on import
 init_db()
+
+
+# --- Demo quotas & retention ---------------------------------------------
+def consume_quota(day: str, checks: list[tuple[str, int]]) -> tuple[bool, Optional[str]]:
+    """Atomically check every (key, limit) for `day` and, only if all are under their
+    limit, add one to each. Returns (allowed, first_key_that_was_full)."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")  # serialize concurrent requests
+        for key, limit in checks:
+            row = conn.execute(
+                "SELECT count FROM usage_counters WHERE day = ? AND key = ?", (day, key)
+            ).fetchone()
+            if (row["count"] if row else 0) >= limit:
+                conn.rollback()
+                return False, key
+        for key, _ in checks:
+            conn.execute(
+                """INSERT INTO usage_counters (day, key, count) VALUES (?, ?, 1)
+                   ON CONFLICT(day, key) DO UPDATE SET count = count + 1""",
+                (day, key),
+            )
+        conn.commit()
+        return True, None
+    finally:
+        conn.close()
+
+
+def quota_remaining(day: str, checks: list[tuple[str, int]]) -> int:
+    """Smallest number of requests left across the given (key, limit) pairs."""
+    with get_connection() as conn:
+        left = []
+        for key, limit in checks:
+            row = conn.execute(
+                "SELECT count FROM usage_counters WHERE day = ? AND key = ?", (day, key)
+            ).fetchone()
+            left.append(max(0, limit - (row["count"] if row else 0)))
+        return min(left) if left else 0
+
+
+def purge_older_than(cutoff_iso: str, keep_usage_since_day: str) -> int:
+    """Delete notes, tasks, captions and summaries created before `cutoff_iso`, their
+    search entries, expired sessions and old usage counters. Returns notes deleted."""
+    with get_connection() as conn:
+        for table in ("tasks", "content_items", "summaries"):
+            conn.execute(f"DELETE FROM {table} WHERE created_at < ?", (cutoff_iso,))
+        cur = conn.execute("DELETE FROM voice_notes WHERE created_at < ?", (cutoff_iso,))
+        conn.execute("DELETE FROM notes_fts WHERE note_id NOT IN (SELECT id FROM voice_notes)")
+        conn.execute("DELETE FROM sessions WHERE expires_at < ?", (_now_iso(),))
+        conn.execute("DELETE FROM usage_counters WHERE day < ?", (keep_usage_since_day,))
+        conn.commit()
+        return cur.rowcount

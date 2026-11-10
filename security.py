@@ -19,14 +19,22 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 import db
+import demo
 
 log = logging.getLogger("voice_to_insight.security")
 
 # Paths reachable without credentials (platform liveness probes).
 PUBLIC_PATHS = {"/healthz", "/api/auth/login", "/api/auth/register"}
 
-# Endpoints that call paid / CPU-heavy backends.
-RATE_LIMITED_PATHS = {"/api/transcribe", "/api/understand", "/api/rag/ask"}
+# Endpoints that call paid / CPU-heavy backends, plus login and sign-up (slows down
+# password guessing and mass account creation).
+RATE_LIMITED_PATHS = {
+    "/api/transcribe", "/api/understand", "/api/rag/ask", "/api/auth/login", "/api/auth/register",
+}
+
+# The account that owns data created through the APP_PASSWORD (Basic auth) login and
+# in open single-user mode. db.init_db() always creates it.
+OWNER_USER_ID = 1
 
 
 def _auth_config() -> tuple[str, str]:
@@ -53,7 +61,7 @@ def _check_basic_auth(header: str) -> bool:
     user, sep, pwd = decoded.partition(":")
     if not sep:
         return False
-    user_ok = secrets.compare_digest(user.encode(), username.encode()) or secrets.compare_digest(user.encode(), b"admin")
+    user_ok = secrets.compare_digest(user.encode(), username.encode())
     pwd_ok = secrets.compare_digest(pwd.encode(), password.encode())
     return user_ok and pwd_ok
 
@@ -85,8 +93,10 @@ def get_current_user(request: Request) -> Optional[dict]:
     # Legacy basic auth check
     auth_header = request.headers.get("authorization", "").strip()
     if auth_header.startswith("Basic ") and _check_basic_auth(auth_header):
+        # Map the master login to the owner account so its data is saved and shown
+        # under one real user id.
         user_name = _auth_config()[0]
-        return {"id": 0, "email": f"{user_name}@local", "display_name": user_name, "created_at": ""}
+        return {"id": OWNER_USER_ID, "email": f"{user_name}@local", "display_name": user_name, "created_at": ""}
 
     # If master password is required and no credentials provided:
     if auth_enabled():
@@ -96,8 +106,15 @@ def get_current_user(request: Request) -> Optional[dict]:
             headers={"WWW-Authenticate": 'Basic realm="Voice-to-Insight", charset="UTF-8"'},
         )
 
+    # Public demo: never let anonymous visitors use the owner's workspace or API key.
+    if demo.enabled():
+        raise HTTPException(
+            status_code=401,
+            detail="Please sign in or create a free account to try the demo.",
+        )
+
     # In open / development / test mode when no auth headers are provided:
-    return {"id": 1, "email": "user@voiceagent.local", "display_name": "Default User", "created_at": ""}
+    return {"id": OWNER_USER_ID, "email": "user@voiceagent.local", "display_name": "Default User", "created_at": ""}
 
 
 class _RateLimiter:
