@@ -1,3 +1,14 @@
+---
+title: Voice-to-Insight Agent
+emoji: 🎙️
+colorFrom: blue
+colorTo: gray
+sdk: docker
+app_port: 7860
+short_description: Voice notes in Arabic/English to tasks, captions & RAG
+pinned: false
+---
+
 # 🎙️ Voice-to-Insight Agent
 
 Record or upload a voice note in **Arabic (including dialects), English, French, or a mix** → the app transcribes it, classifies the intent, extracts structured data, takes an action, and stores everything so you can ask questions about past notes later.
@@ -71,6 +82,33 @@ uvicorn main:app --reload
 Open <http://localhost:8000>.
 
 Check integration status any time at <http://localhost:8000/api/health>.
+
+## Deploy on Hugging Face Spaces (free)
+
+The repo is ready to run as a Docker Space: the YAML block at the top of this README tells Spaces to build the `Dockerfile` and serve port 7860. The image defaults to the public demo (`DEMO_MODE=true`), local Whisper (`small`, baked into the image) and Gemini.
+
+1. Create a **new Gemini API key just for the demo** at <https://aistudio.google.com/apikey>, in a new project with billing off, so it can never be charged.
+2. On <https://huggingface.co/new-space>, pick a name, choose **Docker** → **Blank**, hardware **CPU basic (free)**, and create the Space.
+3. In the Space, open **Settings → Variables and secrets**:
+   - **New secret:** `GEMINI_API_KEY` = your demo key.
+   - **New variable:** `APP_TIMEZONE` = your time zone, e.g. `Asia/Beirut`.
+   - Optional variables: `DEMO_DAILY_PER_USER`, `DEMO_DAILY_TOTAL`, etc. (see below).
+4. Push this repository to the Space (use a Hugging Face access token with write access as the password):
+
+   ```bash
+   git remote add space https://huggingface.co/spaces/<your-username>/<space-name>
+   ```
+   ```bash
+   git push space main
+   ```
+
+   Spaces builds the image (several minutes the first time) and starts it. Later pushes rebuild it.
+5. Open the Space, create an account, and try a voice note in English and Arabic.
+
+Notes:
+- The free Space has no persistent disk: accounts, notes and daily counters reset when the Space restarts or rebuilds. For a short demo that's fine (notes are deleted after 24 hours anyway); attach storage and set `DB_PATH=/data/insights.db` if you need them to survive.
+- To end the demo, set the variable `DEMO_CLOSED=true` (the Space restarts with the model switched off), then delete the demo key in Google AI Studio.
+- For a private instance instead, set `DEMO_MODE=false` and `APP_PASSWORD`.
 
 ## Public demo (share a live link on your own key)
 
